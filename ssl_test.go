@@ -107,7 +107,7 @@ func TestSSLVerifyFull(t *testing.T) {
 	}
 
 	{
-		var x509err x509.UnknownAuthorityError
+		var x509err x509.HostnameError
 		if !errors.As(err, &x509err) {
 			t.Fatalf("expected x509.HostnameError, got %#+v", err)
 		}
