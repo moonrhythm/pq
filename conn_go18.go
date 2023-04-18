@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -15,12 +16,8 @@ const (
 
 // Implement the "QueryerContext" interface
 func (cn *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	list := make([]driver.Value, len(args))
-	for i, nv := range args {
-		list[i] = nv.Value
-	}
 	finish := cn.watchCancel(ctx)
-	r, err := cn.query(query, list)
+	r, err := cn.query(query, args)
 	if err != nil {
 		if finish != nil {
 			finish()
@@ -32,25 +29,64 @@ func (cn *conn) QueryContext(ctx context.Context, query string, args []driver.Na
 }
 
 // Implement the "ExecerContext" interface
-func (cn *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	list := make([]driver.Value, len(args))
-	for i, nv := range args {
-		list[i] = nv.Value
-	}
-
+func (cn *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (res driver.Result, err error) {
 	if finish := cn.watchCancel(ctx); finish != nil {
 		defer finish()
 	}
 
-	return cn.Exec(query, list)
+	if err := cn.err.get(); err != nil {
+		return nil, err
+	}
+	defer cn.errRecover(&err)
+
+	// Check to see if we can use the "simpleExec" interface, which is
+	// *much* faster than going through prepare/exec
+	if len(args) == 0 {
+		// ignore commandTag, our caller doesn't care
+		r, _, err := cn.simpleExec(query)
+		return r, err
+	}
+
+	if cn.binaryParameters {
+		cn.sendBinaryModeQuery(query, args)
+
+		cn.readParseResponse()
+		cn.readBindResponse()
+		cn.readPortalDescribeResponse()
+		cn.postExecuteWorkaround()
+		res, _, err = cn.readExecuteResponse("Execute")
+		return res, err
+	}
+	// Use the unnamed statement to defer planning until bind
+	// time, or else value-based selectivity estimates cannot be
+	// used.
+	st := cn.prepareTo(query, "")
+	r, err := st.ExecContext(ctx, args)
+	if err != nil {
+		panic(err)
+	}
+	return r, err
 }
 
 // Implement the "ConnPrepareContext" interface
-func (cn *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+func (cn *conn) PrepareContext(ctx context.Context, query string) (_ driver.Stmt, err error) {
 	if finish := cn.watchCancel(ctx); finish != nil {
 		defer finish()
 	}
-	return cn.Prepare(query)
+
+	if err := cn.err.get(); err != nil {
+		return nil, err
+	}
+	defer cn.errRecover(&err)
+
+	if len(query) >= 4 && strings.EqualFold(query[:4], "COPY") {
+		s, err := cn.prepareCopyIn(query)
+		if err == nil {
+			cn.inCopy = true
+		}
+		return s, err
+	}
+	return cn.prepareTo(query, cn.gname()), nil
 }
 
 // Implement the "ConnBeginTx" interface
@@ -182,12 +218,8 @@ func (cn *conn) cancel(ctx context.Context) error {
 
 // Implement the "StmtQueryContext" interface
 func (st *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	list := make([]driver.Value, len(args))
-	for i, nv := range args {
-		list[i] = nv.Value
-	}
 	finish := st.watchCancel(ctx)
-	r, err := st.query(list)
+	r, err := st.query(args)
 	if err != nil {
 		if finish != nil {
 			finish()
@@ -199,17 +231,19 @@ func (st *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (dri
 }
 
 // Implement the "StmtExecContext" interface
-func (st *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	list := make([]driver.Value, len(args))
-	for i, nv := range args {
-		list[i] = nv.Value
-	}
-
+func (st *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (res driver.Result, err error) {
 	if finish := st.watchCancel(ctx); finish != nil {
 		defer finish()
 	}
 
-	return st.Exec(list)
+	if err := st.cn.err.get(); err != nil {
+		return nil, err
+	}
+	defer st.cn.errRecover(&err)
+
+	st.exec(args)
+	res, _, err = st.cn.readExecuteResponse("simple query")
+	return res, err
 }
 
 // watchCancel is implemented on stmt in order to not mark the parent conn as bad
