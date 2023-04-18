@@ -334,7 +334,6 @@ func TestBoolArrayValue(t *testing.T) {
 }
 
 func BenchmarkBoolArrayValue(b *testing.B) {
-	rand.Seed(1)
 	x := make([]bool, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.Intn(2) == 0
@@ -485,7 +484,6 @@ func TestByteaArrayValue(t *testing.T) {
 }
 
 func BenchmarkByteaArrayValue(b *testing.B) {
-	rand.Seed(1)
 	x := make([][]byte, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = make([]byte, len(x))
@@ -642,7 +640,6 @@ func TestFloat64ArrayValue(t *testing.T) {
 }
 
 func BenchmarkFloat64ArrayValue(b *testing.B) {
-	rand.Seed(1)
 	x := make([]float64, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.NormFloat64()
@@ -795,7 +792,6 @@ func TestInt64ArrayValue(t *testing.T) {
 }
 
 func BenchmarkInt64ArrayValue(b *testing.B) {
-	rand.Seed(1)
 	x := make([]int64, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.Int63()
@@ -949,7 +945,6 @@ func TestFloat32ArrayValue(t *testing.T) {
 }
 
 func BenchmarkFloat32ArrayValue(b *testing.B) {
-	rand.Seed(1)
 	x := make([]float32, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.Float32()
@@ -1102,7 +1097,6 @@ func TestInt32ArrayValue(t *testing.T) {
 }
 
 func BenchmarkInt32ArrayValue(b *testing.B) {
-	rand.Seed(1)
 	x := make([]int32, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.Int31()
@@ -1542,7 +1536,6 @@ func TestGenericArrayValueErrors(t *testing.T) {
 }
 
 func BenchmarkGenericArrayValueBools(b *testing.B) {
-	rand.Seed(1)
 	x := make([]bool, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.Intn(2) == 0
@@ -1555,7 +1548,6 @@ func BenchmarkGenericArrayValueBools(b *testing.B) {
 }
 
 func BenchmarkGenericArrayValueFloat64s(b *testing.B) {
-	rand.Seed(1)
 	x := make([]float64, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.NormFloat64()
@@ -1568,7 +1560,6 @@ func BenchmarkGenericArrayValueFloat64s(b *testing.B) {
 }
 
 func BenchmarkGenericArrayValueInt64s(b *testing.B) {
-	rand.Seed(1)
 	x := make([]int64, 10)
 	for i := 0; i < len(x); i++ {
 		x[i] = rand.Int63()
