@@ -1458,7 +1458,7 @@ func (st *stmt) exec(v []driver.NamedValue) {
 			if x.Value == nil {
 				w.int32(-1)
 			} else {
-				b := encode(&cn.parameterStatus, x, st.paramTyps[i])
+				b := encode(&cn.parameterStatus, x.Value, st.paramTyps[i])
 				w.int32(len(b))
 				w.bytes(b)
 			}
