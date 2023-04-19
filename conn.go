@@ -1754,7 +1754,7 @@ func (cn *conn) sendBinaryParameters(b *writeBuf, args []driver.NamedValue) {
 		if x.Value == nil {
 			b.int32(-1)
 		} else {
-			datum := binaryEncode(&cn.parameterStatus, x)
+			datum := binaryEncode(&cn.parameterStatus, x.Value)
 			b.int32(len(datum))
 			b.bytes(datum)
 		}
