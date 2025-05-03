@@ -586,24 +586,10 @@ func parseBytea(s []byte) (result []byte, err error) {
 }
 
 func encodeBytea(serverVersion int, v []byte) (result []byte) {
-	if serverVersion >= 90000 {
-		// Use the hex format if we know that the server supports it
-		result = make([]byte, 2+hex.EncodedLen(len(v)))
-		result[0] = '\\'
-		result[1] = 'x'
-		hex.Encode(result[2:], v)
-	} else {
-		// .. or resort to "escape"
-		for _, b := range v {
-			if b == '\\' {
-				result = append(result, '\\', '\\')
-			} else if b < 0x20 || b > 0x7e {
-				result = append(result, []byte(fmt.Sprintf("\\%03o", b))...)
-			} else {
-				result = append(result, b)
-			}
-		}
-	}
-
+	// Use the hex format if we know that the server supports it
+	result = make([]byte, 2+hex.EncodedLen(len(v)))
+	result[0] = '\\'
+	result[1] = 'x'
+	hex.Encode(result[2:], v)
 	return result
 }
