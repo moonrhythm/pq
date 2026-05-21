@@ -5,10 +5,35 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"unsafe"
 
 	"github.com/lib/pq/internal/proto"
 	"github.com/lib/pq/oid"
 )
+
+// unsafeString returns a string that aliases the bytes of b without copying.
+// The caller must guarantee that b is not modified for the lifetime of the
+// returned string and that the consumer does not retain the string beyond the
+// lifetime of b. Intended for read-only pure functions (e.g. strconv.ParseInt)
+// where the cost of a copy would otherwise dominate.
+func unsafeString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// unsafeBytes returns a []byte that aliases the bytes of s without copying.
+// The returned slice must be treated as read-only — mutating it violates Go's
+// string immutability invariant. Intended for read-only consumers (e.g.
+// hex.Encode's src argument) where copying the string would otherwise
+// dominate.
+func unsafeBytes(s string) []byte {
+	if len(s) == 0 {
+		return nil
+	}
+	return unsafe.Slice(unsafe.StringData(s), len(s))
+}
 
 type readBuf []byte
 
@@ -57,15 +82,11 @@ type writeBuf struct {
 }
 
 func (b *writeBuf) int32(n int) {
-	x := make([]byte, 4)
-	binary.BigEndian.PutUint32(x, uint32(n))
-	b.buf = append(b.buf, x...)
+	b.buf = binary.BigEndian.AppendUint32(b.buf, uint32(n))
 }
 
 func (b *writeBuf) int16(n int) {
-	x := make([]byte, 2)
-	binary.BigEndian.PutUint16(x, uint16(n))
-	b.buf = append(b.buf, x...)
+	b.buf = binary.BigEndian.AppendUint16(b.buf, uint16(n))
 }
 
 func (b *writeBuf) string(s string) {
@@ -78,6 +99,21 @@ func (b *writeBuf) byte(c proto.RequestCode) {
 
 func (b *writeBuf) bytes(v []byte) {
 	b.buf = append(b.buf, v...)
+}
+
+// reserveLen reserves 4 bytes for a length prefix and returns the position
+// of the reserved slot. After writing the payload, call patchLen with the
+// returned position to back-patch the payload length.
+func (b *writeBuf) reserveLen() int {
+	pos := len(b.buf)
+	b.buf = append(b.buf, 0, 0, 0, 0)
+	return pos
+}
+
+// patchLen writes the length of the payload that was appended since
+// reserveLen returned pos.
+func (b *writeBuf) patchLen(pos int) {
+	binary.BigEndian.PutUint32(b.buf[pos:pos+4], uint32(len(b.buf)-pos-4))
 }
 
 func (b *writeBuf) wrap() []byte {

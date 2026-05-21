@@ -1780,7 +1780,7 @@ func BenchmarkSelect(b *testing.B) {
 	// network communication, so the numbers are less noisy.
 	b.Run("mock", func(b *testing.B) {
 		run := func(b *testing.B, c *conn, query string) {
-			stmt, err := c.Prepare(query)
+			stmt, err := c.PrepareContext(context.Background(), query)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -1899,7 +1899,7 @@ func BenchmarkPreparedSelect(b *testing.B) {
 				"D\x00\x00\x00n\x00\x01\x00\x00\x00d0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"+
 				"C\x00\x00\x00\rSELECT 1\x00"+
 				"Z\x00\x00\x00\x05I")
-			stmt, err := c.Prepare(`select '` + strings.Repeat("0123456789", 10) + `'`)
+			stmt, err := c.PrepareContext(context.Background(), `select '`+strings.Repeat("0123456789", 10)+`'`)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -1920,7 +1920,7 @@ func BenchmarkPreparedSelect(b *testing.B) {
 				seriesRowData+
 				"C\x00\x00\x00\x0fSELECT 100\x00"+
 				"Z\x00\x00\x00\x05I")
-			stmt, err := c.Prepare(`select generate_series(1, 100)`)
+			stmt, err := c.PrepareContext(context.Background(), `select generate_series(1, 100)`)
 			if err != nil {
 				b.Fatal(err)
 			}

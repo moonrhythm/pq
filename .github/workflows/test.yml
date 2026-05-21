@@ -49,6 +49,15 @@ jobs:
         echo 'PQTEST_BINARY_PARAMETERS=yes go test -race ./...'
         PQTEST_BINARY_PARAMETERS=yes go test -race ./...
 
+    - name: 'Smoke benchmarks'
+      if: matrix.pg == '18' && matrix.go == '1.26'
+      run: |
+        # Run every benchmark once. This is a smoke test to catch
+        # compile-time and run-time regressions in benchmarks (not a
+        # perf measurement — that needs a stable runner).
+        echo 'go test -run=^$ -bench=. -benchtime=1x -benchmem ./...'
+        go test -run=^$ -bench=. -benchtime=1x -benchmem ./...
+
   pgbouncer:
     runs-on: 'ubuntu-latest'
     steps:

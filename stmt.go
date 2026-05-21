@@ -126,19 +126,8 @@ func (st *stmt) exec(v []driver.NamedValue) error {
 		w.int16(0)
 		w.int16(len(v))
 		for i, x := range v {
-			if x.Value == nil {
-				w.int32(-1)
-			} else {
-				b, err := encode(x.Value, st.paramTyps[i])
-				if err != nil {
-					return err
-				}
-				if b == nil {
-					w.int32(-1)
-				} else {
-					w.int32(len(b))
-					w.bytes(b)
-				}
+			if err := encodeInto(w, x.Value, st.paramTyps[i]); err != nil {
+				return err
 			}
 		}
 	}
