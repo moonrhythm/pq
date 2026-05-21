@@ -57,14 +57,6 @@ const (
 
 var sslModes = []SSLMode{SSLModeDisable, SSLModeRequire, SSLModeVerifyFull, SSLModeVerifyCA}
 
-func (s SSLMode) useSSL() bool {
-	switch s {
-	case SSLModeRequire, SSLModeVerifyCA, SSLModeVerifyFull:
-		return true
-	}
-	return false
-}
-
 // Values for [SSLNegotiation] that pq supports.
 const (
 	// Negotiate whether SSL should be used. This is the default.
