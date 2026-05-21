@@ -15,6 +15,11 @@ import (
 	"github.com/lib/pq/oid"
 )
 
+// encode returns the text-format encoding of x as a freshly allocated []byte.
+// Production code uses encodeInto, which writes directly into the wire-protocol
+// buffer without an intermediate allocation. encode is retained as the
+// reference implementation that TestEncodeIntoMatchesEncode compares against
+// and as a target for BenchmarkEncode.
 func encode(x any, pgtypOid oid.Oid) ([]byte, error) {
 	switch v := x.(type) {
 	case int64:
@@ -72,14 +77,7 @@ func encodeInto(wb *writeBuf, x any, pgtypOid oid.Oid) error {
 		wb.buf = append(wb.buf, v...)
 	case string:
 		if pgtypOid == oid.T_bytea {
-			pos := wb.reserveLen()
-			wb.buf = append(wb.buf, '\\', 'x')
-			n := hex.EncodedLen(len(v))
-			wb.buf = slices.Grow(wb.buf, n)
-			start := len(wb.buf)
-			wb.buf = wb.buf[:start+n]
-			hex.Encode(wb.buf[start:], []byte(v))
-			wb.patchLen(pos)
+			encodeByteaInto(wb, unsafeBytes(v))
 			return nil
 		}
 		wb.int32(len(v))

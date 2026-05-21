@@ -396,7 +396,10 @@ func TestEncodeIntoMatchesEncode(t *testing.T) {
 		{"bytes_bytea", []byte{0, 128, 255}, oid.T_bytea},
 		{"string", "abc", oid.T_text},
 		{"string_bytea", "abc", oid.T_bytea},
+		{"string_bytea_empty", "", oid.T_bytea},
 		{"time", time.Date(2021, 6, 1, 12, 30, 45, 0, time.UTC), oid.T_timestamptz},
+		{"time_nonutc", time.Date(2021, 6, 1, 12, 30, 45, 0, time.FixedZone("PST", -8*60*60)), oid.T_timestamptz},
+		{"time_pre_ad", time.Date(-44, 3, 15, 12, 0, 0, 0, time.UTC), oid.T_timestamp},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

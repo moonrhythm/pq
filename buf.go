@@ -23,6 +23,18 @@ func unsafeString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
+// unsafeBytes returns a []byte that aliases the bytes of s without copying.
+// The returned slice must be treated as read-only — mutating it violates Go's
+// string immutability invariant. Intended for read-only consumers (e.g.
+// hex.Encode's src argument) where copying the string would otherwise
+// dominate.
+func unsafeBytes(s string) []byte {
+	if len(s) == 0 {
+		return nil
+	}
+	return unsafe.Slice(unsafe.StringData(s), len(s))
+}
+
 type readBuf []byte
 
 func (b *readBuf) int32() (n int) {

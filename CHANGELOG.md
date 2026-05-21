@@ -54,6 +54,26 @@ to a previous version of this fork.
 
 - pq now requires Go 1.23.
 
+### Performance
+
+- Reduce allocations in the per-parameter encode path and the per-cell text
+  decode path. Parameter encoding now writes directly into the wire-protocol
+  buffer (via `encodeInto`) instead of returning an intermediate `[]byte`,
+  zeroing per-parameter allocations for `int64`, `float64`, `bool`, and
+  `bytea` and cutting one allocation off `time.Time`. Integer and float
+  result columns parse via `strconv` using a zero-copy string view of the
+  read buffer.
+
+- **`unsafe` is now used in the encode/decode hot path.** The fork's general
+  direction is attack-surface reduction, so this is a deliberate exception:
+  `unsafeString` and `unsafeBytes` (in [buf.go](buf.go)) provide zero-copy
+  views into existing buffers and are only handed to read-only pure
+  functions (`strconv.ParseInt`, `strconv.ParseFloat`, `hex.Encode`) that do
+  not retain the argument. The bytes they alias live in the conn's read
+  buffer or a caller-owned string; ownership and lifetime are documented at
+  the helpers. Any future change in this area must verify the lifetime
+  invariant — see the comments on those helpers.
+
 ### Features
 
 - Implement `require_auth` connection parameter ([#1310]).
