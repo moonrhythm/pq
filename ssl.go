@@ -110,16 +110,25 @@ func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 	// For verify-ca/verify-full we also default to ~/.postgresql/root.crt if
 	// it exists, matching libpq. sslmode=require never auto-discovers — that
 	// was the surprising "silently promote to verify-ca" behaviour we removed.
-	if (mode == SSLModeVerifyCA || mode == SSLModeVerifyFull) &&
-		cfg.SSLRootCert == "" && !cfg.SSLInline && home != "" {
+	verifyMode := mode == SSLModeVerifyCA || mode == SSLModeVerifyFull
+	if verifyMode && cfg.SSLRootCert == "" && !cfg.SSLInline && home != "" {
 		f := filepath.Join(home, "root.crt")
 		if _, err := os.Stat(f); err == nil {
 			cfg.SSLRootCert = f
 		}
 	}
-	rootPem, err := sslCertificateAuthority(tlsConf, cfg)
+	// Load the root cert bytes if set. They're used for two distinct things:
+	// populating tlsConf.RootCAs for server verification (only under verify
+	// modes), and extracting intermediates to append to the client cert chain
+	// (any mode, as long as a client cert is configured).
+	rootPem, err := loadSSLRootCert(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if verifyMode {
+		if err := sslApplyRootCAs(tlsConf, cfg, rootPem); err != nil {
+			return nil, err
+		}
 	}
 	sslAppendIntermediates(tlsConf, cfg, rootPem)
 
@@ -216,36 +225,37 @@ func sslClientCertificates(tlsConf *tls.Config, cfg Config, home string) error {
 
 var testSystemRoots *x509.CertPool
 
-// sslCertificateAuthority adds the RootCA specified in the "sslrootcert" setting.
-func sslCertificateAuthority(tlsConf *tls.Config, cfg Config) ([]byte, error) {
-	// Only load root certificate if not blank, like libpq.
-	if cfg.SSLRootCert == "" {
+// loadSSLRootCert returns the PEM bytes of the configured sslrootcert, or nil
+// if not set or set to "system". Errors only on I/O failure or invalid config.
+// Parsing the PEM is left to the caller.
+func loadSSLRootCert(cfg Config) ([]byte, error) {
+	if cfg.SSLRootCert == "" || cfg.SSLRootCert == "system" {
 		return nil, nil
 	}
+	if cfg.SSLInline {
+		return []byte(cfg.SSLRootCert), nil
+	}
+	return os.ReadFile(cfg.SSLRootCert)
+}
 
+// sslApplyRootCAs populates tlsConf.RootCAs from the loaded root cert bytes.
+// Only call under verify-ca / verify-full — sslmode=require sets
+// InsecureSkipVerify, which makes RootCAs irrelevant for server verification.
+func sslApplyRootCAs(tlsConf *tls.Config, cfg Config, rootPem []byte) error {
+	if cfg.SSLRootCert == "" {
+		return nil
+	}
 	if cfg.SSLRootCert == "system" {
 		// No work to do as system CAs are used by default if RootCAs is nil.
 		tlsConf.RootCAs = testSystemRoots
-		return nil, nil
+		return nil
 	}
-
-	tlsConf.RootCAs = x509.NewCertPool()
-
-	var cert []byte
-	if cfg.SSLInline {
-		cert = []byte(cfg.SSLRootCert)
-	} else {
-		var err error
-		cert, err = os.ReadFile(cfg.SSLRootCert)
-		if err != nil {
-			return nil, err
-		}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(rootPem) {
+		return errors.New("pq: couldn't parse pem from sslrootcert")
 	}
-
-	if !tlsConf.RootCAs.AppendCertsFromPEM(cert) {
-		return nil, errors.New("pq: couldn't parse pem from sslrootcert")
-	}
-	return cert, nil
+	tlsConf.RootCAs = pool
+	return nil
 }
 
 // sslAppendIntermediates appends intermediate CA certificates from sslrootcert

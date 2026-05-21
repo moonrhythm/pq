@@ -455,9 +455,13 @@ func (cfg *Config) fromEnv(env []string) error {
 		}
 		switch k {
 		case "PGREQUIRESSL", "PGSSLCOMPRESSION", // Deprecated.
-			"PGREALM", "PGGSSENCMODE", "PGGSSDELEGATION", "PGGSSLIB", // krb stuff
+			"PGREALM", "PGGSSENCMODE", "PGGSSDELEGATION", "PGGSSLIB", "PGKRBSRVNAME", // krb stuff
 			"PGCHANNELBINDING", "PGSSLCRL", "PGSSLCRLDIR",
-			"PGSSLCERTMODE", "PGREQUIREPEER":
+			"PGSSLCERTMODE", "PGREQUIREPEER",
+			// Removed in the moonrhythm fork. Error loudly rather than silently
+			// no-op so operators carrying these over from libpq notice.
+			"PGTARGETSESSIONATTRS", "PGLOADBALANCEHOSTS", "PGREQUIREAUTH",
+			"PGSERVICE", "PGSERVICEFILE", "PGPASSFILE":
 			return fmt.Errorf("pq: environment variable $%s is not supported", k)
 		}
 		e[k] = v

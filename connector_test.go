@@ -273,7 +273,7 @@ func TestIsUTF8(t *testing.T) {
 	}
 }
 
-func TestParseURL(t *testing.T) {
+func TestConvertURL(t *testing.T) {
 	tests := []struct {
 		in, want, wantErr string
 	}{
@@ -293,7 +293,7 @@ func TestParseURL(t *testing.T) {
 	t.Parallel()
 	for _, tt := range tests {
 		t.Run("", func(t *testing.T) {
-			have, err := ParseURL(tt.in)
+			have, err := convertURL(tt.in)
 			if !pqtest.ErrorContains(err, tt.wantErr) {
 				t.Fatal(err)
 			}

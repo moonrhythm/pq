@@ -14,11 +14,11 @@ to a previous version of this fork.
   `RequireAuth*` / `require_auth` machinery were removed with them.
 - **TLS**: `sslmode=allow` and `sslmode=prefer` are no longer accepted (no
   downgrade fallback). The default `sslmode` is now `require`. Under
-  `sslmode=require` the driver no longer implicitly auto-promotes to
-  CA-verification when `~/.postgresql/root.crt` or an explicit `sslrootcert=`
-  is set — set `sslmode=verify-ca` / `verify-full` to get verification. The
-  `~/.postgresql/root.crt` default *is* still honoured for `verify-ca` and
-  `verify-full`.
+  `sslmode=require`, `sslrootcert=` is read but **not** used to verify the
+  server (it's only used to extract intermediate CAs that need to be sent
+  with the client cert chain) — set `sslmode=verify-ca` / `verify-full` to
+  actually verify the server. The `~/.postgresql/root.crt` default *is*
+  still honoured for `verify-ca` and `verify-full`.
 - **Multi-host failover**: `target_session_attrs`, `load_balance_hosts`, the
   `Multi` / `ConfigMultihost` config, `checkTSA`, and the related
   `PGTARGETSESSIONATTRS` / `PGLOADBALANCEHOSTS` / `PGREQUIREAUTH` env vars are
@@ -33,12 +33,20 @@ to a previous version of this fork.
 - **Hstore**: the `hstore/` subpackage (Scanner/Valuer for the hstore type) is
   removed.
 - **Deprecated APIs**: severity constants (`Efatal`, `Epanic`, ...), the
-  `PGError` interface, `Error.Get`, `CopyIn`, `CopyInSchema`, and
-  `FallbackApplicationName` are removed. `ParseURL` is kept for now.
+  `PGError` interface, `Error.Get`, `CopyIn`, `CopyInSchema`,
+  `FallbackApplicationName`, and `ParseURL` are removed. Pass a
+  `postgres://…` URL directly to `sql.Open("postgres", ...)` instead of
+  calling `pq.ParseURL` first; it has worked since Go 1.0.
 - **Bytea decoding**: only the hex format is accepted. The legacy "escape"
   format is no longer decoded.
 - **Debug knobs**: `PQGO_DEBUG` (and the `debugProto` printlns it gated) and
   `PQTEST_BINARY_PARAMETERS` are removed.
+
+- **Loud rejection of unsupported env vars**: `PGTARGETSESSIONATTRS`,
+  `PGLOADBALANCEHOSTS`, `PGREQUIREAUTH`, `PGSERVICE`, `PGSERVICEFILE`,
+  `PGPASSFILE`, and `PGKRBSRVNAME` now error explicitly when set in the
+  environment, instead of being silently ignored. This catches mistakes
+  from operators carrying these over from libpq workflows.
 
 - As announced in the release notes for v1.12.0, this release changes the
   default `sslmode` from `require` to `prefer`, which is the default used by
