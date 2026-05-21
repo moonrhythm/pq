@@ -63,27 +63,3 @@ services:
       'POSTGRES_DATABASE': 'pqgo'
       'POSTGRES_USER':     'pqgo'
       'POSTGRES_PASSWORD': 'unused'
-  pg15:
-    profiles:    ['pg15']
-    image:       'postgres:15'
-    ports:       ['127.0.0.1:5432:5432']
-    entrypoint:  '/init/entry.sh'
-    volumes:     ['./testdata/postgres:/init', './testdata/ssl:/ssl']
-    shm_size:    '128mb'
-    healthcheck: {test: ['CMD-SHELL', 'pg_isready -U pqgo -d pqgo'], start_period: '30s', start_interval: '1s'}
-    environment:
-      'POSTGRES_DATABASE': 'pqgo'
-      'POSTGRES_USER':     'pqgo'
-      'POSTGRES_PASSWORD': 'unused'
-  pg14:
-    profiles:    ['pg14']
-    image:       'postgres:14'
-    ports:       ['127.0.0.1:5432:5432']
-    entrypoint:  '/init/entry.sh'
-    volumes:     ['./testdata/postgres:/init', './testdata/ssl:/ssl']
-    shm_size:    '128mb'
-    healthcheck: {test: ['CMD-SHELL', 'pg_isready -U pqgo -d pqgo'], start_period: '30s', start_interval: '1s'}
-    environment:
-      'POSTGRES_DATABASE': 'pqgo'
-      'POSTGRES_USER':     'pqgo'
-      'POSTGRES_PASSWORD': 'unused'
