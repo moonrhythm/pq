@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,15 +14,6 @@ import (
 	"github.com/lib/pq/internal/pqtime"
 	"github.com/lib/pq/oid"
 )
-
-func binaryEncode(x any) ([]byte, error) {
-	switch v := x.(type) {
-	case []byte:
-		return v, nil
-	default:
-		return encode(x, oid.T_unknown)
-	}
-}
 
 func encode(x any, pgtypOid oid.Oid) ([]byte, error) {
 	switch v := x.(type) {
@@ -49,6 +41,73 @@ func encode(x any, pgtypOid oid.Oid) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("pq: encode: unknown type for %T", v)
 	}
+}
+
+// encodeInto encodes x and appends a 4-byte length prefix followed by the
+// encoded payload directly to wb.buf. A nil interface or a nil []byte is
+// written as a -1 length with no payload. This avoids the intermediate
+// []byte allocation that encode() returns.
+func encodeInto(wb *writeBuf, x any, pgtypOid oid.Oid) error {
+	switch v := x.(type) {
+	case nil:
+		wb.int32(-1)
+	case int64:
+		pos := wb.reserveLen()
+		wb.buf = strconv.AppendInt(wb.buf, v, 10)
+		wb.patchLen(pos)
+	case float64:
+		pos := wb.reserveLen()
+		wb.buf = strconv.AppendFloat(wb.buf, v, 'f', -1, 64)
+		wb.patchLen(pos)
+	case []byte:
+		if v == nil {
+			wb.int32(-1)
+			return nil
+		}
+		if pgtypOid == oid.T_bytea {
+			encodeByteaInto(wb, v)
+			return nil
+		}
+		wb.int32(len(v))
+		wb.buf = append(wb.buf, v...)
+	case string:
+		if pgtypOid == oid.T_bytea {
+			pos := wb.reserveLen()
+			wb.buf = append(wb.buf, '\\', 'x')
+			n := hex.EncodedLen(len(v))
+			wb.buf = slices.Grow(wb.buf, n)
+			start := len(wb.buf)
+			wb.buf = wb.buf[:start+n]
+			hex.Encode(wb.buf[start:], []byte(v))
+			wb.patchLen(pos)
+			return nil
+		}
+		wb.int32(len(v))
+		wb.buf = append(wb.buf, v...)
+	case bool:
+		pos := wb.reserveLen()
+		wb.buf = strconv.AppendBool(wb.buf, v)
+		wb.patchLen(pos)
+	case time.Time:
+		pos := wb.reserveLen()
+		wb.buf = append(wb.buf, formatTS(v)...)
+		wb.patchLen(pos)
+	default:
+		return fmt.Errorf("pq: encode: unknown type for %T", v)
+	}
+	return nil
+}
+
+// encodeByteaInto writes the 4-byte length prefix and the hex-encoded
+// representation of v (with the leading `\x` marker) directly into wb.buf.
+func encodeByteaInto(wb *writeBuf, v []byte) {
+	n := hex.EncodedLen(len(v))
+	wb.int32(2 + n)
+	wb.buf = append(wb.buf, '\\', 'x')
+	wb.buf = slices.Grow(wb.buf, n)
+	start := len(wb.buf)
+	wb.buf = wb.buf[:start+n]
+	hex.Encode(wb.buf[start:], v)
 }
 
 func decode(ps *parameterStatus, s []byte, typ oid.Oid, f format) (any, error) {
@@ -117,7 +176,8 @@ func textDecode(ps *parameterStatus, s []byte, typ oid.Oid) (any, error) {
 	case oid.T_bool:
 		return s[0] == 't', nil
 	case oid.T_int8, oid.T_int4, oid.T_int2:
-		i, err := strconv.ParseInt(string(s), 10, 64)
+		// strconv.ParseInt does not retain the string; zero-copy view into s is safe.
+		i, err := strconv.ParseInt(unsafeString(s), 10, 64)
 		if err != nil {
 			err = errors.New("pq: " + err.Error())
 		}
@@ -126,7 +186,8 @@ func textDecode(ps *parameterStatus, s []byte, typ oid.Oid) (any, error) {
 		// We always use 64 bit parsing, regardless of whether the input text is for
 		// a float4 or float8, because clients expect float64s for all float datatypes
 		// and returning a 32-bit parsed float64 produces lossy results.
-		f, err := strconv.ParseFloat(string(s), 64)
+		// strconv.ParseFloat does not retain the string; zero-copy view into s is safe.
+		f, err := strconv.ParseFloat(unsafeString(s), 64)
 		if err != nil {
 			err = errors.New("pq: " + err.Error())
 		}

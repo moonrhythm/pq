@@ -2,10 +2,12 @@ package pq
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -377,6 +379,56 @@ func TestAppendEncodedText(t *testing.T) {
 	}
 }
 
+func TestEncodeIntoMatchesEncode(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		oid   oid.Oid
+	}{
+		{"nil_iface", nil, oid.T_unknown},
+		{"int64_pos", int64(1234), oid.T_int8},
+		{"int64_neg", int64(-9223372036854775808), oid.T_int8},
+		{"float64", 3.14159, oid.T_float8},
+		{"bool_true", true, oid.T_bool},
+		{"bool_false", false, oid.T_bool},
+		{"bytes", []byte("hello"), oid.T_text},
+		{"bytes_nil", []byte(nil), oid.T_text},
+		{"bytes_bytea", []byte{0, 128, 255}, oid.T_bytea},
+		{"string", "abc", oid.T_text},
+		{"string_bytea", "abc", oid.T_bytea},
+		{"time", time.Date(2021, 6, 1, 12, 30, 45, 0, time.UTC), oid.T_timestamptz},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// expected: encode + length prefix (matching the pre-F3 wire format)
+			var want []byte
+			if tc.value == nil {
+				want = []byte{0xff, 0xff, 0xff, 0xff}
+			} else {
+				b, err := encode(tc.value, tc.oid)
+				if err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+				if b == nil {
+					want = []byte{0xff, 0xff, 0xff, 0xff}
+				} else {
+					want = make([]byte, 4, 4+len(b))
+					binary.BigEndian.PutUint32(want, uint32(len(b)))
+					want = append(want, b...)
+				}
+			}
+
+			wb := &writeBuf{buf: make([]byte, 0, 64)}
+			if err := encodeInto(wb, tc.value, tc.oid); err != nil {
+				t.Fatalf("encodeInto: %v", err)
+			}
+			if !bytes.Equal(wb.buf, want) {
+				t.Fatalf("encodeInto produced %x, want %x", wb.buf, want)
+			}
+		})
+	}
+}
+
 func TestAppendEscapedText(t *testing.T) {
 	buf := appendEscapedText(nil, "hallo\tescape")
 	buf = appendEscapedText(buf, "hallo\\tescape\n")
@@ -469,6 +521,42 @@ func BenchmarkEncode(b *testing.B) {
 			encode(x, oid.T_bytea)
 		}
 	})
+}
+
+func BenchmarkStrconvParseInt(b *testing.B) {
+	s := []byte("1234567890")
+	b.Run("string_copy", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = strconv.ParseInt(string(s), 10, 64)
+		}
+	})
+	b.Run("unsafeString", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = strconv.ParseInt(unsafeString(s), 10, 64)
+		}
+	})
+}
+
+func BenchmarkEncodeInto(b *testing.B) {
+	run := func(name string, x any, oidVal oid.Oid) {
+		b.Run(name, func(b *testing.B) {
+			wb := &writeBuf{buf: make([]byte, 0, 64)}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				wb.buf = wb.buf[:0]
+				_ = encodeInto(wb, x, oidVal)
+			}
+		})
+	}
+	run("int64", int64(1234), oid.T_int8)
+	run("float64", 3.14159, oid.T_float8)
+	run("bool", true, oid.T_bool)
+	run("timestamptz", time.Date(2001, time.January, 1, 0, 0, 0, 0, time.Local), oid.T_timestamptz)
+	run("bytea_hex", []byte("abcdefghijklmnopqrstuvwxyz"), oid.T_bytea)
+	run("string", "abcdefghijklmnopqrstuvwxyz", oid.T_text)
 }
 
 func BenchmarkAppendEscapedText(b *testing.B) {

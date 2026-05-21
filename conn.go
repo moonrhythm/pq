@@ -1358,17 +1358,8 @@ func (cn *conn) sendBinaryParameters(b *writeBuf, args []driver.NamedValue) erro
 
 	b.int16(len(args))
 	for _, x := range args {
-		if x.Value == nil {
-			b.int32(-1)
-		} else if xx, ok := x.Value.([]byte); ok && xx == nil {
-			b.int32(-1)
-		} else {
-			datum, err := binaryEncode(x.Value)
-			if err != nil {
-				return err
-			}
-			b.int32(len(datum))
-			b.bytes(datum)
+		if err := encodeInto(b, x.Value, oid.T_unknown); err != nil {
+			return err
 		}
 	}
 	return nil
