@@ -24,10 +24,6 @@ func TestMain(m *testing.M) {
 			return
 		}
 	}
-	if debugProto { // It's just confusing/annoying when running with PQGO_DEBUG=1
-		return
-	}
-
 	fatal := func(msg any) {
 		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(1)

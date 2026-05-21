@@ -2,8 +2,6 @@ package pqutil
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -60,32 +58,3 @@ func ErrNotExists(err error) bool {
 	return false
 }
 
-var WarnFD io.Writer = os.Stderr
-
-// Pgpass gets the filepath to the pgpass file to use, returning "" if a pgpass
-// file shouldn't be used.
-func Pgpass(passfile string) string {
-	// Get passfile from the options.
-	if passfile == "" {
-		home := Home(false)
-		if home == "" {
-			return ""
-		}
-		passfile = filepath.Join(home, ".pgpass")
-	}
-
-	// On Win32, the directory is protected, so we don't have to check the file.
-	if runtime.GOOS != "windows" {
-		fi, err := os.Stat(passfile)
-		if err != nil {
-			return ""
-		}
-		if fi.Mode().Perm()&(0x77) != 0 {
-			fmt.Fprintf(WarnFD,
-				"WARNING: password file %q has group or world access; permissions should be u=rw (0600) or less\n",
-				passfile)
-			return ""
-		}
-	}
-	return passfile
-}

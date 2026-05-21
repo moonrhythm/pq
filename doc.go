@@ -117,20 +117,6 @@ The channel name in both Listen and Unlisten is case sensitive, and can contain
 any characters legal in an [identifier]. Note that the channel name will be
 truncated to 63 bytes by the PostgreSQL server.
 
-# Kerberos Support
-
-If you need support for Kerberos authentication, add the following to your main
-package:
-
-	import "github.com/lib/pq/auth/kerberos"
-
-	func init() {
-		pq.RegisterGSSProvider(func() (pq.Gss, error) { return kerberos.NewGSS() })
-	}
-
-This package is in a separate module so that users who don't need Kerberos don't
-have to add unnecessary dependencies.
-
 [identifier]: http://www.postgresql.org/docs/current/static/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
 [NOTIFY]: http://www.postgresql.org/docs/current/static/sql-notify.html
 */

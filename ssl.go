@@ -60,9 +60,6 @@ func getTLSConfigClone(key string) *tls.Config {
 
 // ssl generates a function to upgrade a net.Conn based on the "sslmode" and
 // related settings. The function is nil when no upgrade should take place.
-//
-// Don't refer to Config.SSLMode here, as the mode in arguments may be different
-// in case of sslmode=allow or prefer.
 func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 	var (
 		home = pqutil.Home(true)
@@ -72,37 +69,15 @@ func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 		// Only verify the CA signing but not the hostname.
 		verifyCaOnly = false
 	)
-	if mode.useSSL() && !cfg.SSLInline && cfg.SSLRootCert == "" && home != "" {
-		f := filepath.Join(home, "root.crt")
-		if _, err := os.Stat(f); err == nil {
-			cfg.SSLRootCert = f
-		}
-	}
 	switch {
-	case mode == SSLModeDisable || mode == SSLModeAllow:
+	case mode == SSLModeDisable:
 		return nil, nil
 
-	case mode == SSLModeRequire || mode == SSLModePrefer:
-		// Skip TLS's own verification since it requires full verification.
+	case mode == SSLModeRequire:
+		// Skip TLS verification entirely; sslmode=require means "encrypt the
+		// transport but do not validate the peer." Callers who want validation
+		// must use verify-ca or verify-full.
 		tlsConf.InsecureSkipVerify = true
-
-		// From http://www.postgresql.org/docs/current/static/libpq-ssl.html:
-		//
-		// For backwards compatibility with earlier versions of PostgreSQL, if a
-		// root CA file exists, the behavior of sslmode=require will be the same
-		// as that of verify-ca, meaning the server certificate is validated
-		// against the CA. Relying on this behavior is discouraged, and
-		// applications that need certificate validation should always use
-		// verify-ca or verify-full.
-		if cfg.SSLRootCert != "" {
-			if cfg.SSLInline {
-				verifyCaOnly = true
-			} else if _, err := os.Stat(cfg.SSLRootCert); err == nil {
-				verifyCaOnly = true
-			} else if cfg.SSLRootCert != "system" {
-				cfg.SSLRootCert = ""
-			}
-		}
 	case mode == SSLModeVerifyCA:
 		// Skip TLS's own verification since it requires full verification.
 		tlsConf.InsecureSkipVerify = true

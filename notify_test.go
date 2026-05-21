@@ -329,8 +329,7 @@ func TestListenerFailedQuery(t *testing.T) {
 	if !ok {
 		t.Fatalf("could not send query to server: %v", err)
 	}
-	_, ok = err.(PGError)
-	if !ok {
+	if _, ok := err.(*Error); !ok {
 		t.Fatalf("unexpected error %v", err)
 	}
 

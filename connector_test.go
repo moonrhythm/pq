@@ -4,19 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
 	"reflect"
-	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lib/pq/internal/pqtest"
-	"github.com/lib/pq/internal/pqutil"
 	"github.com/lib/pq/internal/proto"
 )
 
@@ -76,17 +71,6 @@ func TestNewConnector(t *testing.T) {
 		defer db.Close()
 		useConn(t, db)
 	})
-	t.Run("Environ", func(t *testing.T) {
-		t.Setenv("PGPASSFILE", "/tmp/.pgpass")
-		c, err := NewConnector("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if have := c.cfg.Passfile; have != "/tmp/.pgpass" {
-			t.Fatalf("wrong option for pgassfile: %q", have)
-		}
-	})
-
 	t.Run("WithConfig", func(t *testing.T) {
 		cfg, err := NewConfig("")
 		if err != nil {
@@ -203,10 +187,6 @@ func TestRuntimeParameters(t *testing.T) {
 		//   pq: unsupported startup parameter: search_path (08P01)
 		{"search_path='a, b'", "search_path", "a, b", "", true, false},
 
-		// test fallback_application_name
-		{"application_name=foo fallback_application_name=bar", "application_name", "foo", "", false, false},
-		{"application_name='' fallback_application_name=bar", "application_name", "", "", false, false},
-		{"fallback_application_name=bar", "application_name", "bar", "", false, false},
 	}
 
 	pqtest.Unsetenv(t, "PGAPPNAME")
@@ -354,11 +334,8 @@ func TestNewConfig(t *testing.T) {
 		{"sslinline=no", nil, "sslinline=no", ""},
 		{"sslinline=lol", nil, "", `pq: wrong value for "sslinline": strconv.ParseBool: parsing "lol": invalid syntax`},
 
-		// application_name and fallback_application_name
+		// application_name
 		{"application_name=acme", nil, "application_name=acme", ""},
-		{"application_name=acme fallback_application_name=roadrunner", nil, "application_name=acme fallback_application_name=roadrunner", ""},
-		{"fallback_application_name=roadrunner", []string{"PGAPPNAME=acme"}, "application_name=acme fallback_application_name=roadrunner", ""},
-		{"fallback_application_name=roadrunner", nil, "application_name=roadrunner fallback_application_name=roadrunner", ""},
 
 		// Timeout and port
 		{"connect_timeout=5", nil, "connect_timeout=5", ""},
@@ -367,14 +344,12 @@ func TestNewConfig(t *testing.T) {
 		{"", []string{"PGCONNECT_TIMEOUT=5s"}, "", `pq: wrong value for $PGCONNECT_TIMEOUT: strconv.ParseInt: parsing "5s": invalid syntax`},
 		{"port=5s", nil, "", `pq: wrong value for "port": strconv.ParseUint: parsing "5s": invalid syntax`},
 		{"", []string{"PGPORT=5s"}, "", `pq: wrong value for $PGPORT: strconv.ParseUint: parsing "5s": invalid syntax`},
-		{"host=a,b port=1,a", nil, "", `strconv.ParseUint: parsing "a": invalid syntax`},
 
 		// hostaddr
 		{"hostaddr=127.1.2.3", nil, "hostaddr=127.1.2.3", ""},
 		{"hostaddr=::1", nil, "hostaddr=::1", ""},
 		{"", []string{"PGHOSTADDR=2a01:4f9:3081:5413::2"}, "hostaddr=2a01:4f9:3081:5413::2", ""},
 		{"", []string{"PGHOSTADDR=lol"}, "", "unable to parse IP"},
-		{"hostaddr=1.1.1.1,lol", nil, "", "unable to parse IP"},
 
 		// Runtime
 		{"user=u search_path=abc", nil, "search_path=abc user=u", ""},
@@ -387,16 +362,14 @@ func TestNewConfig(t *testing.T) {
 			"dbname=db host=example.com opt=val password=pw port=1 sslmode=require user=u", ""},
 		{"postgres://pqgo@localhost/pqgo?hostaddr=1.1.1.1", nil, "dbname=pqgo host=localhost hostaddr=1.1.1.1 user=pqgo", ""},
 
-		{"postgres://pqgo@a,,b:1/pqgo?hostaddr=1.1.1.1,,2.2.2.2", nil,
-			"dbname=pqgo host=a,localhost,b hostaddr=1.1.1.1,,2.2.2.2 port=1 user=pqgo", ""},
-		// net/url doesn't support multiple ports, but can use ?port= (libpq
-		// also supports this).
-		{"postgres://pqgo@a,b:1,2/pqgo", nil, "", "invalid port"},
-		{"postgres://pqgo@a,b/pqgo?port=1,2", nil, "dbname=pqgo host=a,b port=1,2 user=pqgo", ""},
-
 		// Unsupported env vars
 		{"", []string{"PGREALM=abc"}, "", `pq: environment variable $PGREALM is not supported`},
-		{"", []string{"PGKRBSRVNAME=abc"}, "", `pq: environment variable $PGKRBSRVNAME is not supported`},
+
+		// Multi-host is not supported
+		{"host=a,b", nil, "", "multiple hosts are not supported"},
+		{"host=a,b port=1,2", nil, "", "multiple hosts are not supported"},
+		{"", []string{"PGHOST=a,b"}, "", "multiple hosts are not supported"},
+		{"hostaddr=127.2.2.2,127.3.3.3", nil, "", "multiple hosts are not supported"},
 
 		// Unsupported enums
 		{"sslmode=sslmeharder", nil, "", `pq: wrong value for "sslmode"`},
@@ -405,23 +378,6 @@ func TestNewConfig(t *testing.T) {
 		{"sslnegotiation=sslmeharder", nil, "", `pq: wrong value for "sslnegotiation"`},
 		{"postgres://u:pw@example.com:1/db?sslnegotiation=sslmeharder", nil, "", `pq: wrong value for "sslnegotiation"`},
 		{"", []string{"PGSSLNEGOTIATION=sslmeharder"}, "", `pq: wrong value for $PGSSLNEGOTIATION`},
-
-		// multihost
-		{"host=a,b", nil, "host=a,b", ""},
-		{"host=a,b port=1,2", nil, "host=a,b port=1,2", ""},
-		{"", []string{"PGHOST=a,b"}, "host=a,b", ""},
-		{"hostaddr=127.2.2.2,127.3.3.3", nil, "hostaddr=127.2.2.2,127.3.3.3", ""},
-		// Fill in defaults
-		{"host=a,,b port=1,,2", nil, "host=a,localhost,b port=1,5432,2", ""},
-		{"host=a,,c hostaddr=1.1.1.1,,2.2.2.2", nil, "host=a,localhost,c hostaddr=1.1.1.1,,2.2.2.2", ""},
-		// Must have either one port or match number of hosts
-		{"host=a,,b port=1", nil, "host=a,localhost,b port=1", ""},
-		{"host=a,,b port=1,2", nil, "", "could not match 2 port numbers to 3 hosts"},
-		{"host=a,,b port=1,2,,4", nil, "", "could not match 4 port numbers to 3 hosts"},
-		// host and hostaddr must match
-		{"host=a,b,c hostaddr=1.1.1.1,2.2.2.2", nil, "", "could not match 3 host names to 2 hostaddr values"},
-		{"host=a hostaddr=1.1.1.1,2.2.2.2", nil, "", "could not match 1 host names to 2 hostaddr values"},
-		{"", []string{"PGHOST=a,,b", "PGHOSTADDR=1.1.1.1,,2.2.2.2", "PGPORT=3,,4"}, "host=a,localhost,b hostaddr=1.1.1.1,,2.2.2.2 port=3,5432,4", ""},
 
 		// Protocol version
 		{"min_protocol_version=3.0", nil, "min_protocol_version=3.0", ""},
@@ -436,14 +392,6 @@ func TestNewConfig(t *testing.T) {
 		{"", []string{"PGMAXPROTOCOLVERSION=bogus"}, "", `pq: wrong value for $PGMAXPROTOCOLVERSION: "bogus" is not supported`},
 		{"min_protocol_version=3.2 max_protocol_version=3.0", nil, "", `min_protocol_version "3.2" cannot be greater than max_protocol_version "3.0"`},
 
-		// requireauth
-		{"require_auth=", nil, "require_auth=''", ``},
-		{"require_auth=none", nil, "require_auth=none", ""},
-		{"require_auth=md5,scram-sha-256", nil, "require_auth=md5,scram-sha-256", ""},
-		{"require_auth=md5,scram-sha256", nil, "", `wrong value for "require_auth": "scram-sha256" is not supported`},
-		{"require_auth=!md5,!scram-sha-256", nil, "require_auth=!md5,!scram-sha-256", ""},
-		{"require_auth=md5,!password", nil, "", `negative require_auth method "!password" cannot be mixed with non-negative methods`},
-		{"require_auth=!md5,password", nil, "", `require_auth method "password" cannot be mixed with negative methods`},
 	}
 
 	t.Parallel()
@@ -505,242 +453,6 @@ func TestConfigClone(t *testing.T) {
 		if have := cc.string(); have != want {
 			t.Errorf("\nhave: %q\nwant: %q", have, want)
 		}
-	}
-}
-
-func TestConnectMulti(t *testing.T) {
-	var (
-		connectedTo [3]bool
-		accept      = func(n int) func(pqtest.Fake, net.Conn) {
-			return func(f pqtest.Fake, cn net.Conn) {
-				_, clientParams, ok := f.ReadStartup(cn)
-				if !ok {
-					return
-				}
-				if clientParams["database"] != "pqgo" {
-					f.WriteMsg(cn, proto.ErrorResponse, fmt.Sprintf(
-						"SFATAL\x00VFATAL\x00C3D000\x00Mdatabase %q does not exist\x00Fpostinit.c\x00L1014\x00RInitPostgres\x00\x00",
-						clientParams["database"]))
-					return
-				}
-				f.WriteMsg(cn, proto.AuthenticationRequest, "\x00\x00\x00\x00")
-				serverParams := map[string]string{
-					"default_transaction_read_only": "off",
-					"in_hot_standby":                "off",
-				}
-				if n == 2 {
-					serverParams["default_transaction_read_only"] = "on"
-					serverParams["in_hot_standby"] = "on"
-				}
-				f.WriteStartup(cn, serverParams)
-
-				f.WriteMsg(cn, proto.ReadyForQuery, "I")
-				for {
-					code, _, ok := f.ReadMsg(cn)
-					if !ok {
-						return
-					}
-					switch code {
-					case proto.Query:
-						connectedTo[n] = true
-						f.WriteMsg(cn, proto.EmptyQueryResponse, "")
-						f.WriteMsg(cn, proto.ReadyForQuery, "I")
-					case proto.Terminate:
-						cn.Close()
-						return
-					}
-				}
-			}
-		}
-		f1 = pqtest.NewFake(t, accept(0))
-		f2 = pqtest.NewFake(t, accept(1))
-		f3 = pqtest.NewFake(t, accept(2))
-	)
-	defer f1.Close()
-	defer f2.Close()
-	defer f3.Close()
-
-	// The host from the test servers is always 127.0.0.1. Can't reliably use
-	// anything else AFAIK, as macOS only routes 127.0.0.1 instead of 127/8 like
-	// it should so then the tests will work on Linux but not macOS. One of many
-	// reasons macOS is wank. At any rate, make sure to add the port or you'll
-	// accidentally connect to the Docker container.
-	//
-	// TestNewConfig() already test if everything is parsed correctly, so don't
-	// need to extensively test that here.
-	tests := []struct {
-		dsn     string
-		want    [3]bool
-		wantErr []string
-	}{
-		{fmt.Sprintf(`host=%s,%s port=%s`, f1.Host(), f2.Host(), f1.Port()), [3]bool{true, false, false}, nil},
-		{fmt.Sprintf(`host=255.255.255.255,%s port=%s`, f2.Host(), f2.Port()), [3]bool{false, true, false}, nil},
-		{fmt.Sprintf(`host=wrong,wrong hostaddr=255.255.255.255,%s port=%s`, f2.Host(), f2.Port()), [3]bool{false, true, false}, nil},
-
-		// Make sure it returns both errors.
-		{fmt.Sprintf(`host=255.255.255.255,%s port=%s dbname=wrong`, f1.Host(), f1.Port()),
-			[3]bool{false, false, false}, []string{"dial tcp", `database "wrong" does not exist`}},
-
-		// Test target_session_attrs; f3 is a read-only standby server
-
-		// any: just connect to the first one.
-		{fmt.Sprintf("host=%s,%s port=%s,%s", f3.Host(), f1.Host(), f3.Port(), f1.Port()),
-			[3]bool{false, false, true}, nil},
-		// read-only, and standby: skip f1 and select f3
-		{fmt.Sprintf("host=%s,%s port=%s,%s target_session_attrs=read-only", f1.Host(), f3.Host(), f1.Port(), f3.Port()),
-			[3]bool{false, false, true}, nil},
-		{fmt.Sprintf("host=%s,%s port=%s,%s target_session_attrs=standby", f1.Host(), f3.Host(), f1.Port(), f3.Port()),
-			[3]bool{false, false, true}, nil},
-		// read-write and primary: skip f3 and select f1
-		{fmt.Sprintf("host=%s,%s port=%s,%s target_session_attrs=read-write", f3.Host(), f1.Host(), f3.Port(), f1.Port()),
-			[3]bool{true, false, false}, nil},
-		{fmt.Sprintf("host=%s,%s port=%s,%s target_session_attrs=primary", f3.Host(), f1.Host(), f3.Port(), f1.Port()),
-			[3]bool{true, false, false}, nil},
-		// prefer-standby
-		{fmt.Sprintf("host=%s,%s port=%s,%s target_session_attrs=standby", f3.Host(), f3.Host(), f3.Port(), f3.Port()),
-			[3]bool{false, false, true}, nil},
-	}
-
-	t.Parallel()
-	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
-			connectedTo = [3]bool{}
-
-			_, err := pqtest.DB(t, "connect_timeout=1 "+tt.dsn)
-			if err != nil {
-				if tt.wantErr == nil {
-					t.Fatal(err)
-				}
-
-				jerr, ok := errors.Unwrap(err).(interface {
-					Unwrap() []error
-				})
-				if !ok {
-					t.Fatalf("Unwrap() []error missing on %T: %[1]s", err)
-				}
-				errs := jerr.Unwrap()
-				if len(errs) != len(tt.wantErr) {
-					t.Fatalf("wrong number of errors: %d", len(errs))
-				}
-				for i, e := range errs {
-					if !pqtest.ErrorContains(e, tt.wantErr[i]) {
-						t.Errorf("error %d wrong\nhave: %v\nwant: %v", i+1, e, tt.wantErr[i])
-					}
-				}
-				if t.Failed() {
-					t.FailNow()
-				}
-			}
-
-			if !reflect.DeepEqual(connectedTo, tt.want) {
-				t.Errorf("\nhave: %v\nwant: %v", connectedTo, tt.want)
-			}
-		})
-	}
-
-	t.Run("load_balance_hosts=random", func(t *testing.T) {
-		hosts := [3]int{}
-		for range 25 {
-			connectedTo = [3]bool{}
-			_ = pqtest.MustDB(t, fmt.Sprintf("host=%s,%s,%s port=%s,%s,%s load_balance_hosts=random",
-				f1.Host(), f2.Host(), f3.Host(), f1.Port(), f2.Port(), f3.Port()))
-			if n := strings.Count(fmt.Sprintf("%v", connectedTo), "true"); n != 1 {
-				t.Fatal(connectedTo)
-			}
-
-			hosts[slices.Index(connectedTo[:], true)]++
-		}
-		if slices.Index(hosts[:], 0) != -1 {
-			t.Fatal(hosts)
-		}
-	})
-}
-
-func TestConnectionTargetSessionAttrs(t *testing.T) {
-	tests := []struct {
-		dsn     string
-		wantErr string
-		params  map[string]string
-	}{
-		// read-only/read-write from server params
-		{"target_session_attrs=read-only", "", map[string]string{"default_transaction_read_only": "on"}},
-		{"target_session_attrs=read-write", "", map[string]string{"default_transaction_read_only": "off", "in_hot_standby": "off"}},
-		{"target_session_attrs=read-only", "session is not read-only", map[string]string{"default_transaction_read_only": "off"}},
-		{"target_session_attrs=read-write", "session is read-only", map[string]string{"default_transaction_read_only": "on"}},
-		{"target_session_attrs=read-write", "server is in hot standby mode", map[string]string{"default_transaction_read_only": "off", "in_hot_standby": "on"}},
-
-		// primary / standby / prefer-standby from server params
-		{"target_session_attrs=primary", "", map[string]string{"in_hot_standby": "off"}},
-		{"target_session_attrs=standby", "", map[string]string{"in_hot_standby": "on"}},
-		{"target_session_attrs=primary", "server is in hot standby mode", map[string]string{"in_hot_standby": "on"}},
-		{"target_session_attrs=standby", "server is not in hot standby mode", map[string]string{"in_hot_standby": "off"}},
-		{"target_session_attrs=prefer-standby", "", map[string]string{"in_hot_standby": "on"}},
-		{"target_session_attrs=prefer-standby", "", map[string]string{"in_hot_standby": "off"}},
-
-		// read-only/read-write from SHOW
-		{"target_session_attrs=read-only", "", map[string]string{"default_transaction_read_only": "show-on"}},
-		{"target_session_attrs=read-write", "", map[string]string{"default_transaction_read_only": "show-off"}},
-		{"target_session_attrs=read-only", "session is not read-only", map[string]string{"default_transaction_read_only": "show-off"}},
-		{"target_session_attrs=read-write", "session is read-only", map[string]string{"default_transaction_read_only": "show-on"}},
-
-		// primary / standby / prefer-standby from pg_is_in_recovery()
-		{"target_session_attrs=primary", "", map[string]string{"in_hot_standby": "select-off"}},
-		{"target_session_attrs=standby", "", map[string]string{"in_hot_standby": "select-on"}},
-		{"target_session_attrs=primary", "server is in hot standby mode", map[string]string{"in_hot_standby": "select-on"}},
-		{"target_session_attrs=standby", "server is not in hot standby mode", map[string]string{"in_hot_standby": "select-off"}},
-		{"target_session_attrs=prefer-standby", "", map[string]string{"in_hot_standby": "select-on"}},
-		{"target_session_attrs=prefer-standby", "", map[string]string{"in_hot_standby": "select-off"}},
-	}
-
-	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
-			t.Parallel()
-
-			var (
-				show  string
-				inrec *bool
-			)
-			if v := tt.params["default_transaction_read_only"]; strings.HasPrefix(v, "show-") {
-				delete(tt.params, "default_transaction_read_only")
-				show = v[5:]
-			}
-			if v := tt.params["in_hot_standby"]; strings.HasPrefix(v, "select-") {
-				delete(tt.params, "in_hot_standby")
-				b, err := pqutil.ParseBool(v[7:])
-				if err != nil {
-					t.Fatal(err)
-				}
-				inrec = &b
-			}
-
-			f := pqtest.NewFake(t, func(f pqtest.Fake, cn net.Conn) {
-				f.Startup(cn, tt.params)
-				for {
-					code, _, ok := f.ReadMsg(cn)
-					if !ok {
-						return
-					}
-					switch code {
-					case proto.Query:
-						if show != "" {
-							f.SimpleQuery(cn, "SHOW", "transaction_read_only", show)
-						} else if inrec != nil {
-							f.SimpleQuery(cn, "SELECT", "pg_is_in_recovery", *inrec)
-						}
-						f.WriteMsg(cn, proto.ReadyForQuery, "I")
-					case proto.Terminate:
-						cn.Close()
-						return
-					}
-				}
-			})
-			defer f.Close()
-
-			_, err := pqtest.DB(t, f.DSN()+" "+tt.dsn)
-			if !pqtest.ErrorContains(err, tt.wantErr) {
-				t.Errorf("\nhave: %v\nwant: %v", err, tt.wantErr)
-			}
-		})
 	}
 }
 
@@ -888,76 +600,3 @@ func TestProtocolVersion(t *testing.T) {
 	}
 }
 
-func TestService(t *testing.T) {
-	h := pqtest.Home(t)
-	if runtime.GOOS != "windows" {
-		h = filepath.Dir(h)
-	}
-
-	// Test without ~/.pg_service.conf existing
-	t.Run("default file doesn't exist", func(t *testing.T) {
-		cfg, err := NewConfig("service=svc1")
-		if wantErr := fmt.Sprintf(`pq: service file "%s/.pg_service.conf" not found`, h); !pqtest.ErrorContains(err, wantErr) {
-			t.Fatalf("wrong error\nhave: %v\nwant: %v", err, wantErr)
-		}
-		if have := cfg.string(); have != "" {
-			t.Errorf("\nhave: %q\nwant: %q", have, "")
-		}
-	})
-
-	tests := []struct {
-		connect string
-		env     map[string]string
-		want    string
-		wantErr string
-	}{
-		{"service=doesntexist", nil, ``, `definition of service "doesntexist" not found`},
-		{"service=svc1", nil, `connect_timeout=20 dbname=xyz host=firsthost port=1234 service=svc1 user=pqgo`, ``},
-		{"service=svc2", nil, `connect_timeout=20 dbname='with space' host=localhost service=svc2 user=''`, ``},
-		{"service=svc3", nil, ``, `pq: unknown setting "unknown" in service file for service "svc3"`},
-		{"service=svc4", nil, `connect_timeout=20 dbname=pqgo host=localhost service=svc4 user=pqgo`, ``},
-		{"service=svc5", nil, `connect_timeout=20 dbname=pqgo host=localhost service=svc5 user=pqgo`, ``},
-
-		{"service=svc5", map[string]string{"PGSERVICEFILE": "none"}, ``, `service file "none" not found`},
-		{"service=svc1", map[string]string{"PGSERVICEFILE": filepath.Join(h, "other")}, ``, `definition of service "svc1" not found`},
-		{"service=other", map[string]string{"PGSERVICEFILE": filepath.Join(h, "other")},
-			`connect_timeout=20 dbname=other host=localhost service=other user=pqgo`, ``},
-	}
-
-	pqtest.Write(t, []byte("[other]\ndbname=other"), h, "other")
-	pqtest.Write(t, []byte(`
-		[svc1]
-		# Connect to this instead.
-		host=firsthost
-		dbname = xyz
-		port=1234
-
-		[svc2]
-		user=
-		dbname=with space
-
-		[svc3]
-		unknown=wut
-
-		# Empty
-		[svc4]
-		[svc5]
-	`), h, ".pg_service.conf")
-
-	pqtest.Unsetenv(t, "PGPORT")
-	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
-			for k, v := range tt.env {
-				t.Setenv(k, v)
-			}
-
-			cfg, err := NewConfig(tt.connect)
-			if !pqtest.ErrorContains(err, tt.wantErr) {
-				t.Fatalf("wrong error\nhave: %v\nwant: %v", err, tt.wantErr)
-			}
-			if have := cfg.string(); have != tt.want {
-				t.Errorf("\nhave: %q\nwant: %q", have, tt.want)
-			}
-		})
-	}
-}

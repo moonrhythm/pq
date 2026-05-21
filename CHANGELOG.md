@@ -1,6 +1,42 @@
 unreleased
 ----------
 
+### Removed (moonrhythm fork attack-surface trim)
+
+The moonrhythm fork removes a number of upstream features that are not used by
+moonrhythm services, to shrink the runtime attack surface and the code we have
+to maintain. If you depend on any of these, stay on upstream `lib/pq` or pin
+to a previous version of this fork.
+
+- **Authentication**: only SCRAM-SHA-256 is supported. The cleartext password,
+  MD5, and GSS/Kerberos (incl. SSPI) auth paths and the `auth/kerberos`
+  subpackage are gone. `RegisterGSSProvider`, the `GSS` interface, and the
+  `RequireAuth*` / `require_auth` machinery were removed with them.
+- **TLS**: `sslmode=allow` and `sslmode=prefer` are no longer accepted (no
+  downgrade fallback). The default `sslmode` is now `require`. The implicit
+  `~/.postgresql/root.crt` auto-discovery for `sslmode=require` is gone; set
+  `sslmode=verify-ca` or `verify-full` explicitly.
+- **Multi-host failover**: `target_session_attrs`, `load_balance_hosts`, the
+  `Multi` / `ConfigMultihost` config, `checkTSA`, and the related
+  `PGTARGETSESSIONATTRS` / `PGLOADBALANCEHOSTS` / `PGREQUIREAUTH` env vars are
+  removed. Comma-separated `host=` / `hostaddr=` / `port=` values now error.
+- **Config files**: `~/.pgpass` and `pg_service.conf` are no longer read.
+  `PGPASSFILE`, `PGSERVICE`, `PGSERVICEFILE` are ignored. The
+  `internal/pgpass` and `internal/pgservice` subpackages are removed.
+- **Notifications**: `ConnectorWithNoticeHandler`, `NoticeHandlerConnector`,
+  `SetNoticeHandler`, and the `noticeHandler` field on `conn` are gone. NOTICE
+  messages from the server are silently dropped. LISTEN/NOTIFY via
+  `pq.Listener` is unchanged.
+- **Hstore**: the `hstore/` subpackage (Scanner/Valuer for the hstore type) is
+  removed.
+- **Deprecated APIs**: severity constants (`Efatal`, `Epanic`, ...), the
+  `PGError` interface, `Error.Get`, `CopyIn`, `CopyInSchema`, and
+  `FallbackApplicationName` are removed. `ParseURL` is kept for now.
+- **Bytea decoding**: only the hex format is accepted. The legacy "escape"
+  format is no longer decoded.
+- **Debug knobs**: `PQGO_DEBUG` (and the `debugProto` printlns it gated) and
+  `PQTEST_BINARY_PARAMETERS` are removed.
+
 - As announced in the release notes for v1.12.0, this release changes the
   default `sslmode` from `require` to `prefer`, which is the default used by
   libpq and the rest of the PostgreSQL ecosystem ([#1271]).

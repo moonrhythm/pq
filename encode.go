@@ -342,51 +342,19 @@ func FormatTimestamp(t time.Time) []byte {
 	return pqtime.Format(t)
 }
 
-// Parse a bytea value received from the server.  Both "hex" and the legacy
-// "escape" format are supported.
-func parseBytea(s []byte) (result []byte, err error) {
-	// Hex format.
-	if len(s) >= 2 && bytes.Equal(s[:2], []byte("\\x")) {
-		s = s[2:] // trim off leading "\\x"
-		result = make([]byte, hex.DecodedLen(len(s)))
-		_, err := hex.Decode(result, s)
-		if err != nil {
-			return nil, err
-		}
-		return result, nil
+// Parse a bytea value received from the server. Only the "hex" format
+// (PostgreSQL 9.0+ default) is supported.
+func parseBytea(s []byte) ([]byte, error) {
+	if len(s) == 0 {
+		return nil, nil
 	}
-
-	// Escape format.
-	for len(s) > 0 {
-		if s[0] == '\\' {
-			// escaped '\\'
-			if len(s) >= 2 && s[1] == '\\' {
-				result = append(result, '\\')
-				s = s[2:]
-				continue
-			}
-
-			// '\\' followed by an octal number
-			if len(s) < 4 {
-				return nil, fmt.Errorf("invalid bytea sequence %v", s)
-			}
-			r, err := strconv.ParseUint(string(s[1:4]), 8, 8)
-			if err != nil {
-				return nil, fmt.Errorf("could not parse bytea value: %w", err)
-			}
-			result = append(result, byte(r))
-			s = s[4:]
-		} else {
-			// We hit an unescaped, raw byte.  Try to read in as many as
-			// possible in one go.
-			i := bytes.IndexByte(s, '\\')
-			if i == -1 {
-				result = append(result, s...)
-				break
-			}
-			result = append(result, s[:i]...)
-			s = s[i:]
-		}
+	if len(s) < 2 || !bytes.Equal(s[:2], []byte("\\x")) {
+		return nil, fmt.Errorf("pq: bytea value not in hex format")
+	}
+	s = s[2:]
+	result := make([]byte, hex.DecodedLen(len(s)))
+	if _, err := hex.Decode(result, s); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

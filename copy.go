@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/lib/pq/internal/proto"
@@ -122,9 +121,6 @@ func (ci *copyin) flush(buf []byte) error {
 	if len(buf)-1 > proto.MaxUint32 {
 		return errors.New("pq: too many columns")
 	}
-	if debugProto {
-		fmt.Fprintf(os.Stderr, "CLIENT → %-20s %5d  %q\n", proto.RequestCode(buf[0]), len(buf)-5, buf[5:])
-	}
 	binary.BigEndian.PutUint32(buf[1:], uint32(len(buf)-1)) // Set message length (without message identifier).
 	_, err := ci.cn.c.Write(buf)
 	return err
@@ -149,9 +145,7 @@ func (ci *copyin) resploop() {
 			}
 			ci.setResult(res)
 		case proto.NoticeResponse:
-			if n := ci.cn.noticeHandler; n != nil {
-				n(parseError(&r, ""))
-			}
+			// ignored
 		case proto.ReadyForQuery:
 			ci.cn.processReadyForQuery(&r)
 			ci.done <- true

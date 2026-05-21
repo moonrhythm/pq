@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"net"
 	"os"
@@ -21,9 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq/internal/pgpass"
 	"github.com/lib/pq/internal/pqtest"
-	"github.com/lib/pq/internal/pqutil"
 	"github.com/lib/pq/internal/proto"
 	"github.com/lib/pq/pqerror"
 )
@@ -77,65 +74,6 @@ func TestOpen(t *testing.T) {
 				t.Errorf("wrong error:\nhave: %s\nwant: %s", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestPgpass(t *testing.T) {
-	warnbuf := new(bytes.Buffer)
-	pqutil.WarnFD = warnbuf
-	defer func() { pqutil.WarnFD = os.Stderr }()
-
-	assertPassword := func(want string, extra map[string]string) {
-		o := map[string]string{
-			"host":            "localhost",
-			"sslmode":         "disable",
-			"connect_timeout": "20",
-			"user":            "majid",
-			"port":            "5432",
-			"dbname":          "pqgo",
-			"client_encoding": "UTF8",
-			"datestyle":       "ISO, MDY",
-		}
-		maps.Copy(o, extra)
-		have := pgpass.PasswordFromPgpass(o["passfile"], o["user"], o["password"], o["host"], o["port"], o["dbname"])
-		if have != want {
-			t.Fatalf("wrong password\nhave: %q\nwant: %q", have, want)
-		}
-	}
-
-	file := pqtest.TempFile(t, "pgpass", pqtest.NormalizeIndent(`
-		# comment
-		server:5432:some_db:some_user:pass_A
-		*:5432:some_db:some_user:pass_B
-		localhost:*:*:*:pass_C
-		*:*:*:*:pass_fallback
-	`))
-
-	// Missing passfile means empty password.
-	assertPassword("", map[string]string{"host": "server", "dbname": "some_db", "user": "some_user"})
-
-	// wrong permissions for the pgpass file means it should be ignored
-	assertPassword("", map[string]string{"host": "example.com", "passfile": file, "user": "foo"})
-	if h := "has group or world access"; !strings.Contains(warnbuf.String(), h) {
-		t.Errorf("unexpected warning\nhave: %s\nwant: %s", warnbuf, h)
-	}
-	warnbuf.Reset()
-
-	pqtest.Chmod(t, 0o600, file) // Fix the permissions
-
-	assertPassword("pass_A", map[string]string{"host": "server", "passfile": file, "dbname": "some_db", "user": "some_user"})
-	assertPassword("pass_fallback", map[string]string{"host": "example.com", "passfile": file, "user": "foo"})
-	assertPassword("pass_B", map[string]string{"host": "example.com", "passfile": file, "dbname": "some_db", "user": "some_user"})
-
-	// localhost also matches the default "" and UNIX sockets
-	assertPassword("pass_C", map[string]string{"host": "", "passfile": file, "user": "some_user"})
-	assertPassword("pass_C", map[string]string{"host": "/tmp", "passfile": file, "user": "some_user"})
-
-	// Connection parameter takes precedence
-	t.Setenv("PGPASSFILE", "/tmp")
-	assertPassword("pass_A", map[string]string{"host": "server", "passfile": file, "dbname": "some_db", "user": "some_user"})
-	if warnbuf.String() != "" {
-		t.Errorf("warnbuf not empty: %s", warnbuf)
 	}
 }
 
@@ -1633,47 +1571,18 @@ func TestAuth(t *testing.T) {
 		tests := []struct {
 			conn, wantErr string
 		}{
-			{"user=pqgomd5", `re:password authentication failed for user "?pqgomd5"?`},
-			{"user=pqgopassword", `or:empty password returned by client|password authentication failed for user pqgopassword`},
 			{"user=pqgoscram", `re:password authentication failed for user "?pqgoscram"?`},
-
-			{"user=pqgomd5 password=wrong", `re:password authentication failed for user "?pqgomd5"?`},
-			{"user=pqgopassword password=wrong", `re:password authentication failed for user "?pqgopassword"?`},
 			{"user=pqgoscram    password=wrong", `re:password authentication failed for user "?pqgoscram"?`},
-
-			{"user=pqgomd5 password=wordpass", ``},
-			{"user=pqgopassword password=wordpass", ``},
 			{"user=pqgoscram password=wordpass", ``},
 
+			{"user=pqgomd5 password=wordpass", `re:unsupported authentication method`},
+			{"user=pqgopassword password=wordpass", `re:unsupported authentication method`},
+
 			{"user=pqgounknown password=wordpass", `or:role "pqgounknown" does not exist|password authentication failed for user pqgounknown`},
-			{"user=pqgounknown password=wordpass require_auth=md5", `or:role "pqgounknown" does not exist|password authentication failed for user pqgounknown`},
-
-			// require_auth
-			{"user=pqgomd5 password=wordpass require_auth=md5,password", ``},
-			{"user=pqgopassword password=wordpass require_auth=md5,password", ``},
-			{"user=pqgoscram password=wordpass require_auth=md5,password,scram-sha-256", ``},
-			{"user=pqgomd5 password=wordpass require_auth=!none", ``},
-			{"user=pqgopassword password=wordpass require_auth=!none", ``},
-			{"user=pqgoscram password=wordpass require_auth=!none", ``},
-
-			{"user=pqgomd5 password=wordpass require_auth=password", `"password" failed: server requested "md5"`},
-			{"user=pqgopassword password=wordpass require_auth=md5", `"md5" failed: server requested "password"`},
-			{"user=pqgoscram password=wordpass require_auth=md5,password", `authentication method requirement "md5,password" failed: server requested "scram-sha-256"`},
-			{"user=pqgomd5 password=wordpass require_auth=!md5,!password", `"!md5,!password" failed: server requested "md5"`},
-			{"user=pqgopassword password=wordpass require_auth=!md5,!password", `"!md5,!password" failed: server requested "password"`},
-			{"user=pqgoscram password=wordpass require_auth=!md5,!password,!scram-sha-256", `"!md5,!password,!scram-sha-256" failed: server requested "scram-sha-256"`},
-			{"user=pqgomd5 password=wordpass require_auth=password", `"password" failed: server requested "md5"`},
-
-			{"user=pqgo password=unused require_auth=none", ``},
-			{"user=pqgo password=unused require_auth=!none", `"!none" failed: server did not perform any authentication`},
-			{"user=pqgo password=unused require_auth=md5,password,scram-sha-256", `"md5,password,scram-sha-256" failed: server did not perform any authentication`},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.conn, func(t *testing.T) {
-				if strings.Contains(tt.conn, "md5") {
-					pqtest.SkipCockroach(t) // md5 not supported
-				}
 				_, err := pqtest.DB(t, tt.conn)
 				if !pqtest.ErrorContains(err, tt.wantErr) {
 					t.Errorf("wrong error:\nhave: %s\nwant: %s", err, tt.wantErr)
@@ -1725,10 +1634,6 @@ func TestBytea(t *testing.T) {
 }
 
 func TestJSONRawMessage(t *testing.T) {
-	if pqtest.ForceBinaryParameters() {
-		// "expected JSONB version 1 (08P01)" – looks like it always expects jsonb (instead of json)?
-		pqtest.SkipCockroach(t) // TODO: can probably fix
-	}
 	db := pqtest.MustDB(t)
 
 	pqtest.Exec(t, db, `create temp table tbl (j json)`)
