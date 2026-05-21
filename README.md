@@ -138,22 +138,10 @@ PostgreSQL features
 -------------------
 
 ### Authentication
-pq supports PASSWORD, MD5, and SCRAM-SHA256 authentication out of the box. If
-you need GSS/Kerberos authentication you'll need to import the `auth/kerberos`
-module: package:
-
-	import "github.com/lib/pq/auth/kerberos"
-
-	func init() {
-		pq.RegisterGSSProvider(func() (pq.Gss, error) { return kerberos.NewGSS() })
-	}
-
-This is in a separate module so that users who don't need Kerberos (i.e. most
-users) don't have to add unnecessary dependencies.
-
-Reading a [password file] (pgpass) is also supported.
-
-[password file]: http://www.postgresql.org/docs/current/static/libpq-pgpass.html
+This fork only supports SCRAM-SHA-256 authentication. Cleartext password, MD5,
+and GSS/Kerberos auth methods from upstream `lib/pq` have been removed. The
+`~/.pgpass` and `pg_service.conf` config files are also not read — pass
+credentials via the connection string, environment, or `Config` struct.
 
 ### Bulk imports with `COPY [..] FROM STDIN`
 You can perform bulk imports by preparing a `COPY [..] FROM STDIN` statement
@@ -165,21 +153,6 @@ arguments to flush all buffered data.
 
 [copy-doc]: https://pkg.go.dev/github.com/lib/pq#hdr-Bulk_imports
 [copy-ex]: https://pkg.go.dev/github.com/lib/pq#example-package-CopyFromStdin
-
-### NOTICE errors
-PostgreSQL has "NOTICE" errors for informational messages. For example from the
-psql CLI:
-
-    pqgo=# drop table if exists doesnotexist;
-    NOTICE:  table "doesnotexist" does not exist, skipping
-    DROP TABLE
-
-These errors are not returned because they're not really errors but, well,
-notices.
-
-You can register a callback for these notices with [ConnectorWithNoticeHandler]
-
-[ConnectorWithNoticeHandler]: https://pkg.go.dev/github.com/lib/pq#ConnectorWithNoticeHandler
 
 ### Using `LISTEN`/`NOTIFY`
 With [pq.Listener] notifications are send on a channel. For example:
@@ -275,11 +248,6 @@ uses the following defaults:
     PGSSLMODE=disable
     PGCONNECT_TIMEOUT=20
 
-`PQTEST_BINARY_PARAMETERS` can be used to add `binary_parameters=yes` to all
-connection strings:
-
-    PQTEST_BINARY_PARAMETERS=1 go test
-
 Tests can be run against pgbouncer with:
 
     docker compose up -d pgbouncer pg18
@@ -289,29 +257,3 @@ and pgpool with:
 
     docker compose up -d pgpool pg18
     PGPORT=7432 go test ./...
-
-### Protocol debug output
-You can use PQGO_DEBUG=1 to make the driver print the communication with
-PostgreSQL to stderr; this works anywhere (test or applications) and can be
-useful to debug protocol problems.
-
-For example:
-
-    % PQGO_DEBUG=1 go test -run TestSimpleQuery
-    CLIENT → Startup                 69  "\x00\x03\x00\x00database\x00pqgo\x00user [..]"
-    SERVER ← (R) AuthRequest          4  "\x00\x00\x00\x00"
-    SERVER ← (S) ParamStatus         19  "in_hot_standby\x00off\x00"
-    [..]
-    SERVER ← (Z) ReadyForQuery        1  "I"
-             START conn.query
-             START conn.simpleQuery
-    CLIENT → (Q) Query                9  "select 1\x00"
-    SERVER ← (T) RowDescription      29  "\x00\x01?column?\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x17\x00\x04\xff\xff\xff\xff\x00\x00"
-    SERVER ← (D) DataRow              7  "\x00\x01\x00\x00\x00\x011"
-             END conn.simpleQuery
-             END conn.query
-    SERVER ← (C) CommandComplete      9  "SELECT 1\x00"
-    SERVER ← (Z) ReadyForQuery        1  "I"
-    CLIENT → (X) Terminate            0  ""
-    PASS
-    ok      github.com/lib/pq       0.010s

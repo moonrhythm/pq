@@ -209,41 +209,6 @@ func ExampleNewConnector() {
 	// Output:
 }
 
-func ExampleConnectorWithNoticeHandler() {
-	// Base connector to wrap
-	base, err := pq.NewConnector("dbname=pqgo")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Wrap the connector to simply print out the message
-	connector := pq.ConnectorWithNoticeHandler(base, func(notice *pq.Error) {
-		fmt.Printf("NOTICE: %s\n", notice.Message)
-	})
-	db := sql.OpenDB(connector)
-	defer db.Close()
-
-	// Raise a notice
-	_, err = db.Exec(`drop table if exists doesntexist`)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// And via PL/pgSQL.
-	_, err = db.Exec(`
-		do language plpgsql $$ begin
-			raise notice 'test notice';
-		end $$
-	`)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Output:
-	// NOTICE: table "doesntexist" does not exist, skipping
-	// NOTICE: test notice
-}
-
 func ExampleRegisterTLSConfig() {
 	pem, err := os.ReadFile("testdata/ssl/root.crt")
 	if err != nil {

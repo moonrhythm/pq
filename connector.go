@@ -6,7 +6,6 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"maps"
-	"math/rand"
 	"net"
 	"net/netip"
 	neturl "net/url"
@@ -20,7 +19,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/lib/pq/internal/pgservice"
 	"github.com/lib/pq/internal/pqutil"
 	"github.com/lib/pq/internal/proto"
 )
@@ -32,12 +30,6 @@ type (
 	// SSLNegotiation is a sslnegotiation setting.
 	SSLNegotiation string
 
-	// TargetSessionAttrs is a target_session_attrs setting.
-	TargetSessionAttrs string
-
-	// LoadBalanceHosts is a load_balance_hosts setting.
-	LoadBalanceHosts string
-
 	// ProtocolVersion is a min_protocol_version or max_protocol_version
 	// setting.
 	ProtocolVersion string
@@ -45,24 +37,12 @@ type (
 	// SSLProtocolVersion is a ssl_min_protocol_version or
 	// ssl_max_protocol_version setting.
 	SSLProtocolVersion string
-
-	// RequireAuth is a require_auth setting.
-	RequireAuth string
-
-	// RequireAuths is a require_auth setting.
-	RequireAuths []RequireAuth
 )
 
 // Values for [SSLMode] that pq supports.
 const (
 	// No SSL
 	SSLModeDisable = SSLMode("disable")
-
-	// First try a non-SSL connection and if that fails try an SSL connection.
-	SSLModeAllow = SSLMode("allow")
-
-	// First try an SSL connection and if that fails try a non-SSL connection.
-	SSLModePrefer = SSLMode("prefer")
 
 	// Require SSL, but skip verification. This is the default.
 	SSLModeRequire = SSLMode("require")
@@ -75,16 +55,7 @@ const (
 	SSLModeVerifyFull = SSLMode("verify-full")
 )
 
-var sslModes = []SSLMode{SSLModeDisable, SSLModeAllow, SSLModePrefer, SSLModeRequire,
-	SSLModeVerifyFull, SSLModeVerifyCA}
-
-func (s SSLMode) useSSL() bool {
-	switch s {
-	case SSLModePrefer, SSLModeRequire, SSLModeVerifyCA, SSLModeVerifyFull:
-		return true
-	}
-	return false
-}
+var sslModes = []SSLMode{SSLModeDisable, SSLModeRequire, SSLModeVerifyFull, SSLModeVerifyCA}
 
 // Values for [SSLNegotiation] that pq supports.
 const (
@@ -96,51 +67,6 @@ const (
 )
 
 var sslNegotiations = []SSLNegotiation{SSLNegotiationPostgres, SSLNegotiationDirect}
-
-// Values for [TargetSessionAttrs] that pq supports.
-const (
-	// Any successful connection is acceptable. This is the default.
-	TargetSessionAttrsAny = TargetSessionAttrs("any")
-
-	// Session must accept read-write transactions by default: the server must
-	// not be in hot standby mode and default_transaction_read_only must be
-	// off.
-	TargetSessionAttrsReadWrite = TargetSessionAttrs("read-write")
-
-	// Session must not accept read-write transactions by default.
-	TargetSessionAttrsReadOnly = TargetSessionAttrs("read-only")
-
-	// Server must not be in hot standby mode.
-	TargetSessionAttrsPrimary = TargetSessionAttrs("primary")
-
-	// Server must be in hot standby mode.
-	TargetSessionAttrsStandby = TargetSessionAttrs("standby")
-
-	// First try to find a standby server, but if none of the listed hosts is a
-	// standby server, try again in any mode.
-	TargetSessionAttrsPreferStandby = TargetSessionAttrs("prefer-standby")
-)
-
-var targetSessionAttrs = []TargetSessionAttrs{TargetSessionAttrsAny,
-	TargetSessionAttrsReadWrite, TargetSessionAttrsReadOnly, TargetSessionAttrsPrimary,
-	TargetSessionAttrsStandby, TargetSessionAttrsPreferStandby}
-
-// Values for [LoadBalanceHosts] that pq supports.
-const (
-	// Don't load balance; try hosts in the order in which they're provided.
-	// This is the default.
-	LoadBalanceHostsDisable = LoadBalanceHosts("disable")
-
-	// Hosts are tried in random order to balance connections across multiple
-	// PostgreSQL servers.
-	//
-	// When using this value it's recommended to also configure a reasonable
-	// value for connect_timeout. Because then, if one of the nodes that are
-	// used for load balancing is not responding, a new node will be tried.
-	LoadBalanceHostsRandom = LoadBalanceHosts("random")
-)
-
-var loadBalanceHosts = []LoadBalanceHosts{LoadBalanceHostsDisable, LoadBalanceHostsRandom}
 
 // Values for [ProtocolVersion] that pq supports.
 const (
@@ -183,41 +109,6 @@ func (s SSLProtocolVersion) tlsconf() uint16 {
 	default:
 		return 0
 	}
-}
-
-// Values for [RequireAuth] that pq supports.
-const (
-	RequireAuthNone           = RequireAuth("none")
-	RequireAuthPassword       = RequireAuth("password")
-	RequireAuthMD5            = RequireAuth("md5")
-	RequireAuthGSS            = RequireAuth("gss")
-	RequireAuthScramSHA256    = RequireAuth("scram-sha-256")
-	RequireAuthAny            = RequireAuth("!none")
-	RequireAuthNotPassword    = RequireAuth("!password")
-	RequireAuthNotMD5         = RequireAuth("!md5")
-	RequireAuthNotGSS         = RequireAuth("!gss")
-	RequireAuthNotScramSHA256 = RequireAuth("!scram-sha-256")
-
-	// Not (yet) supported by pq
-	// RequireAuthSSPI           = "sspi"
-	// RequireAuthOAuth          = "oauth"
-	// RequireAuthNotSSPI        = "!sspi"
-	// RequireAuthNotOAuth       = "!oauth"
-)
-
-var requireAuths = []RequireAuth{RequireAuthNone, RequireAuthPassword, RequireAuthMD5,
-	RequireAuthGSS, RequireAuthScramSHA256, RequireAuthAny, RequireAuthNotPassword,
-	RequireAuthNotMD5, RequireAuthNotGSS, RequireAuthNotScramSHA256}
-
-func (r RequireAuths) String() string {
-	var b strings.Builder
-	for i, rr := range r {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		b.WriteString(string(rr))
-	}
-	return b.String()
 }
 
 // Connector represents a fixed configuration for the pq driver with a given
@@ -275,18 +166,11 @@ func (p ProtocolVersion) proto() int {
 type Config struct {
 	// The host to connect to. Absolute paths and values that start with @ are
 	// for unix domain sockets. Defaults to localhost.
-	//
-	// A comma-separated list of host names is also accepted, in which case each
-	// host name in the list is tried in order or randomly if load_balance_hosts
-	// is set. An empty item selects the default of localhost. The
-	// target_session_attrs option controls properties the host must have to be
-	// considered acceptable.
 	Host string `postgres:"host" env:"PGHOST"`
 
 	// IPv4 or IPv6 address to connect to. Using hostaddr allows the application
 	// to avoid a host name lookup, which might be important in applications
-	// with time constraints. A hostname is required for sslmode=verify-full and
-	// the GSSAPI or SSPI authentication methods.
+	// with time constraints. A hostname is required for sslmode=verify-full.
 	//
 	// The following rules are used:
 	//
@@ -300,22 +184,9 @@ type Config struct {
 	//   server network address. The value for host is ignored unless the
 	//   authentication method requires it, in which case it will be used as the
 	//   host name.
-	//
-	// A comma-separated list of hostaddr values is also accepted, in which case
-	// each host in the list is tried in order or randonly if load_balance_hosts
-	// is set. An empty item causes the corresponding host name to be used, or
-	// the default host name if that is empty as well. The target_session_attrs
-	// option controls properties the host must have to be considered
-	// acceptable.
 	Hostaddr netip.Addr `postgres:"hostaddr" env:"PGHOSTADDR"`
 
 	// The port to connect to. Defaults to 5432.
-	//
-	// If multiple hosts were given in the host or hostaddr parameters, this
-	// parameter may specify a comma-separated list of ports of the same length
-	// as the host list, or it may specify a single port number to be used for
-	// all hosts. An empty string, or an empty item in a comma-separated list,
-	// specifies the default of 5432.
 	Port uint16 `postgres:"port" env:"PGPORT"`
 
 	// The name of the database to connect to.
@@ -327,21 +198,11 @@ type Config struct {
 	// The user's password.
 	Password string `postgres:"password" env:"PGPASSWORD"`
 
-	// Path to [pgpass] file to store passwords; overrides Password.
-	//
-	// [pgpass]: http://www.postgresql.org/docs/current/static/libpq-pgpass.html
-	Passfile string `postgres:"passfile" env:"PGPASSFILE"`
-
 	// Commandline options to send to the server at connection start.
 	Options string `postgres:"options" env:"PGOPTIONS"`
 
 	// Application name, displayed in pg_stat_activity and log entries.
 	ApplicationName string `postgres:"application_name" env:"PGAPPNAME"`
-
-	// Used if application_name is not given. Specifying a fallback name is
-	// useful in generic utility programs that wish to set a default application
-	// name but allow it to be overridden by the user.
-	FallbackApplicationName string `postgres:"fallback_application_name" env:"-"`
 
 	// Whether to use SSL. Defaults to "require" (different from libpq's default
 	// of "prefer").
@@ -395,15 +256,6 @@ type Config struct {
 	// PEM file. This is a pq extension, not supported in libpq.
 	SSLInline bool `postgres:"sslinline" env:"-"`
 
-	// GSS (Kerberos) service name when constructing the SPN (default is
-	// postgres). This will be combined with the host to form the full SPN:
-	// krbsrvname/host.
-	KrbSrvname string `postgres:"krbsrvname" env:"PGKRBSRVNAME"`
-
-	// GSS (Kerberos) SPN. This takes priority over krbsrvname if present. This
-	// is a pq extension, not supported in libpq.
-	KrbSpn string `postgres:"krbspn" env:"-"`
-
 	// Maximum time to wait while connecting, in seconds. Zero, negative, or not
 	// specified means wait indefinitely
 	ConnectTimeout time.Duration `postgres:"connect_timeout" env:"PGCONNECT_TIMEOUT"`
@@ -431,22 +283,6 @@ type Config struct {
 	// Default mode for the genetic query optimizer.
 	Geqo string `postgres:"geqo" env:"PGGEQO"`
 
-	// Determine whether the session must have certain properties to be
-	// acceptable. It's typically used in combination with multiple host names
-	// to select the first acceptable alternative among several hosts.
-	TargetSessionAttrs TargetSessionAttrs `postgres:"target_session_attrs" env:"PGTARGETSESSIONATTRS"`
-
-	// Controls the order in which the client tries to connect to the available
-	// hosts. Once a connection attempt is successful no other hosts will be
-	// tried. This parameter is typically used in combination with multiple host
-	// names.
-	//
-	// This parameter can be used in combination with target_session_attrs to,
-	// for example, load balance over standby servers only. Once successfully
-	// connected, subsequent queries on the returned connection will all be sent
-	// to the same server.
-	LoadBalanceHosts LoadBalanceHosts `postgres:"load_balance_hosts" env:"PGLOADBALANCEHOSTS"`
-
 	// Minimum acceptable PostgreSQL protocol version. If the server does not
 	// support at least this version, the connection will fail. Defaults to
 	// "3.0".
@@ -455,50 +291,9 @@ type Config struct {
 	// Maximum PostgreSQL protocol version to request from the server. Defaults to "3.0".
 	MaxProtocolVersion ProtocolVersion `postgres:"max_protocol_version" env:"PGMAXPROTOCOLVERSION"`
 
-	// Load connection parameters from the service file at ~/.pg_service.conf
-	// (which can be configured with PGSERVICEFILE).
-	//
-	// The service file is a INI-like file to configure connection parameters:
-	//
-	//   [servicename]
-	//   # Comment
-	//   dbname=foo
-	//
-	// Unlike libpq, this does not look at the system-wide service file, as the
-	// location of this is a compile-time value that is not easy for pq to
-	// retrieve.
-	Service string `postgres:"service" env:"PGSERVICE"`
-
-	// Path to connection service file. Defaults to ~/.pg_service.conf.
-	ServiceFile string `postgres:"-" env:"PGSERVICEFILE"`
-
-	// Require an authentication method from the server and refuse to connect if
-	// the server does not use the requested method.
-	//
-	// This accepts a comma-separated list.
-	//
-	// Methods may be negated with a ! prefix, in which case the server must
-	// *not* attempt the listed method, and the server is free not to
-	// authenticate the client at all. Negated and non-negated forms may not be
-	// combined in the same setting with a comma-separated list.
-	//
-	// As a special case the "none" method requires the server not to use an
-	// authentication challenge. This does not prohibit client certificate
-	// authentication via TLS or GSS authentication via its encrypted transport.
-	// This can be negated to require some form of authentication.
-	//
-	// By default any authentication method is accepted and the server is free
-	// to skip authentication altogether.
-	RequireAuth RequireAuths `postgres:"require_auth" env:"PGREQUIREAUTH"`
-
 	// Runtime parameters: any unrecognized parameter in the DSN will be added
 	// to this and sent to PostgreSQL during startup.
 	Runtime map[string]string `postgres:"-" env:"-"`
-
-	// Multi contains additional connection details. The first value is
-	// available in [Config.Host], [Config.Hostaddr], and [Config.Port], and
-	// additional ones (if any) are available here.
-	Multi []ConfigMultihost
 
 	// Record which parameters were given, so we can distinguish between an
 	// empty string "not given at all".
@@ -506,18 +301,6 @@ type Config struct {
 	// The alternative is to use pointers or sql.Null[..], but that's more
 	// awkward to use.
 	set []string `env:"set"`
-
-	// Only used in newConfig() and tests; joined in the Multi field at the end.
-	multiHost     []string
-	multiHostaddr []netip.Addr
-	multiPort     []uint16
-}
-
-// ConfigMultihost specifies an additional server to try to connect to.
-type ConfigMultihost struct {
-	Host     string
-	Hostaddr netip.Addr
-	Port     uint16
 }
 
 // NewConfig creates a new [Config] from the defaults, environment, service
@@ -577,26 +360,8 @@ func NewConfig(dsn string) (Config, error) {
 // Clone returns a copy of the [Config].
 func (cfg Config) Clone() Config {
 	c := cfg
-	c.Runtime, c.Multi, c.RequireAuth, c.set = maps.Clone(cfg.Runtime), slices.Clone(cfg.Multi),
-		slices.Clone(cfg.RequireAuth), slices.Clone(cfg.set)
+	c.Runtime, c.set = maps.Clone(cfg.Runtime), slices.Clone(cfg.set)
 	return c
-}
-
-// hosts returns a slice of copies of this config, one for each host.
-func (cfg Config) hosts() []Config {
-	cfgs := make([]Config, 1, len(cfg.Multi)+1)
-	cfgs[0] = cfg.Clone()
-	for _, m := range cfg.Multi {
-		c := cfg.Clone()
-		c.Host, c.Hostaddr, c.Port = m.Host, m.Hostaddr, m.Port
-		cfgs = append(cfgs, c)
-	}
-
-	if cfg.LoadBalanceHosts == LoadBalanceHostsRandom {
-		rand.Shuffle(len(cfgs), func(i, j int) { cfgs[i], cfgs[j] = cfgs[j], cfgs[i] })
-	}
-
-	return cfgs
 }
 
 func newConfig(dsn string, env []string) (Config, error) {
@@ -604,7 +369,7 @@ func newConfig(dsn string, env []string) (Config, error) {
 		Host:               "localhost",
 		Port:               5432,
 		SSLSNI:             true,
-		SSLMode:            SSLModePrefer,
+		SSLMode:            SSLModeRequire,
 		MinProtocolVersion: "3.0",
 		MaxProtocolVersion: "3.0",
 	}
@@ -613,45 +378,6 @@ func newConfig(dsn string, env []string) (Config, error) {
 	}
 	if err := cfg.fromDSN(dsn); err != nil {
 		return Config{}, err
-	}
-	if err := cfg.fromService(); err != nil {
-		return Config{}, err
-	}
-
-	// Need to have exactly the same number of host and hostaddr, or only specify one.
-	if cfg.isset("host") && cfg.Host != "" && cfg.Hostaddr != (netip.Addr{}) && len(cfg.multiHost) != len(cfg.multiHostaddr) {
-		return Config{}, fmt.Errorf("pq: could not match %d host names to %d hostaddr values",
-			len(cfg.multiHost)+1, len(cfg.multiHostaddr)+1)
-	}
-	// Need one port that applies to all or exactly the same number of ports as hosts.
-	l, ll := max(len(cfg.multiHost), len(cfg.multiHostaddr)), len(cfg.multiPort)
-	if l > 0 && ll > 0 && l != ll {
-		return Config{}, fmt.Errorf("pq: could not match %d port numbers to %d hosts", ll+1, l+1)
-	}
-
-	// Populate Multi
-	if len(cfg.multiHostaddr) > len(cfg.multiHost) {
-		cfg.multiHost = make([]string, len(cfg.multiHostaddr))
-	}
-	for i, h := range cfg.multiHost {
-		p := cfg.Port
-		if len(cfg.multiPort) > 0 {
-			p = cfg.multiPort[i]
-		}
-		var addr netip.Addr
-		if len(cfg.multiHostaddr) > 0 {
-			addr = cfg.multiHostaddr[i]
-		}
-		cfg.Multi = append(cfg.Multi, ConfigMultihost{
-			Host:     h,
-			Port:     p,
-			Hostaddr: addr,
-		})
-	}
-
-	// Use the "fallback" application name if necessary
-	if cfg.isset("fallback_application_name") && !cfg.isset("application_name") {
-		cfg.ApplicationName = cfg.FallbackApplicationName
 	}
 
 	// We can't work with any client_encoding other than UTF-8 currently.
@@ -688,13 +414,10 @@ func newConfig(dsn string, env []string) (Config, error) {
 		return Config{}, fmt.Errorf("pq: min_protocol_version %q cannot be greater than max_protocol_version %q",
 			cfg.MinProtocolVersion, cfg.MaxProtocolVersion)
 	}
-	if cfg.SSLNegotiation == SSLNegotiationDirect {
-		switch cfg.SSLMode {
-		case SSLModeDisable, SSLModeAllow, SSLModePrefer:
-			return Config{}, fmt.Errorf(
-				`pq: weak sslmode %q may not be used with sslnegotiation=direct (use "require", "verify-ca", or "verify-full")`,
-				cfg.SSLMode)
-		}
+	if cfg.SSLNegotiation == SSLNegotiationDirect && cfg.SSLMode == SSLModeDisable {
+		return Config{}, fmt.Errorf(
+			`pq: weak sslmode %q may not be used with sslnegotiation=direct (use "require", "verify-ca", or "verify-full")`,
+			cfg.SSLMode)
 	}
 	if cfg.SSLRootCert == "system" {
 		if !cfg.isset("sslmode") {
@@ -732,18 +455,18 @@ func (cfg *Config) fromEnv(env []string) error {
 		}
 		switch k {
 		case "PGREQUIRESSL", "PGSSLCOMPRESSION", // Deprecated.
-			"PGREALM", "PGGSSENCMODE", "PGGSSDELEGATION", "PGGSSLIB", // krb stuff
+			"PGREALM", "PGGSSENCMODE", "PGGSSDELEGATION", "PGGSSLIB", "PGKRBSRVNAME", // krb stuff
 			"PGCHANNELBINDING", "PGSSLCRL", "PGSSLCRLDIR",
-			"PGSSLCERTMODE", "PGREQUIREPEER":
+			"PGSSLCERTMODE", "PGREQUIREPEER",
+			// Removed in the moonrhythm fork. Error loudly rather than silently
+			// no-op so operators carrying these over from libpq notice.
+			"PGTARGETSESSIONATTRS", "PGLOADBALANCEHOSTS", "PGREQUIREAUTH",
+			"PGSERVICE", "PGSERVICEFILE", "PGPASSFILE":
 			return fmt.Errorf("pq: environment variable $%s is not supported", k)
-		case "PGKRBSRVNAME":
-			if newGss == nil {
-				return fmt.Errorf("pq: environment variable $%s is not supported as Kerberos is not enabled", k)
-			}
 		}
 		e[k] = v
 	}
-	return cfg.setFromTag(e, "env", false)
+	return cfg.setFromTag(e, "env")
 }
 
 // fromDSN parses the options from name and adds them to the values.
@@ -849,28 +572,10 @@ func (cfg *Config) fromDSN(dsn string) error {
 		opt[string(keyRunes)] = string(valRunes)
 	}
 
-	return cfg.setFromTag(opt, "postgres", false)
+	return cfg.setFromTag(opt, "postgres")
 }
 
-func (cfg *Config) fromService() error {
-	if cfg.Service == "" {
-		return nil
-	}
-
-	if !cfg.isset("PGSERVICEFILE") {
-		if home := pqutil.Home(false); home != "" {
-			cfg.ServiceFile = filepath.Join(home, ".pg_service.conf")
-		}
-	}
-
-	opts, err := pgservice.FindService(cfg.ServiceFile, cfg.Service)
-	if err != nil {
-		return fmt.Errorf("pq: %w", err)
-	}
-	return cfg.setFromTag(opts, "postgres", true)
-}
-
-func (cfg *Config) setFromTag(o map[string]string, tag string, service bool) error {
+func (cfg *Config) setFromTag(o map[string]string, tag string) error {
 	f := "pq: wrong value for %q: "
 	if tag == "env" {
 		f = "pq: wrong value for $%s: "
@@ -885,18 +590,12 @@ func (cfg *Config) setFromTag(o map[string]string, tag string, service bool) err
 			rv                    = values.Field(i)
 			k                     = rt.Tag.Get(tag)
 			connectTimeout        = (tag == "postgres" && k == "connect_timeout") || (tag == "env" && k == "PGCONNECT_TIMEOUT")
-			host                  = (tag == "postgres" && k == "host") || (tag == "env" && k == "PGHOST")
-			hostaddr              = (tag == "postgres" && k == "hostaddr") || (tag == "env" && k == "PGHOSTADDR")
-			port                  = (tag == "postgres" && k == "port") || (tag == "env" && k == "PGPORT")
 			sslmode               = (tag == "postgres" && k == "sslmode") || (tag == "env" && k == "PGSSLMODE")
 			sslnegotiation        = (tag == "postgres" && k == "sslnegotiation") || (tag == "env" && k == "PGSSLNEGOTIATION")
-			targetsessionattrs    = (tag == "postgres" && k == "target_session_attrs") || (tag == "env" && k == "PGTARGETSESSIONATTRS")
-			loadbalancehosts      = (tag == "postgres" && k == "load_balance_hosts") || (tag == "env" && k == "PGLOADBALANCEHOSTS")
 			minprotocolversion    = (tag == "postgres" && k == "min_protocol_version") || (tag == "env" && k == "PGMINPROTOCOLVERSION")
 			maxprotocolversion    = (tag == "postgres" && k == "max_protocol_version") || (tag == "env" && k == "PGMAXPROTOCOLVERSION")
 			sslminprotocolversion = (tag == "postgres" && k == "ssl_min_protocol_version") || (tag == "env" && k == "PGSSLMINPROTOCOLVERSION")
 			sslmaxprotocolversion = (tag == "postgres" && k == "ssl_max_protocol_version") || (tag == "env" && k == "PGSSLMAXPROTOCOLVERSION")
-			requireauth           = (tag == "postgres" && k == "require_auth") || (tag == "env" && k == "PGREQUIREAUTH")
 		)
 		if k == "" || k == "-" {
 			continue
@@ -906,32 +605,23 @@ func (cfg *Config) setFromTag(o map[string]string, tag string, service bool) err
 		delete(o, k)
 		if ok {
 			t, ok := rt.Tag.Lookup("postgres")
-			if !ok || t == "" || t == "-" { // For PGSERVICEFILE, which can only be from env
+			if !ok || t == "" || t == "-" {
 				t, ok = rt.Tag.Lookup("env")
 			}
 			if ok && t != "" && t != "-" {
 				cfg.set = append(cfg.set, t)
+			}
+			if strings.Contains(v, ",") {
+				switch k {
+				case "host", "PGHOST", "hostaddr", "PGHOSTADDR", "port", "PGPORT":
+					return fmt.Errorf(f+"multiple hosts are not supported", k)
+				}
 			}
 			switch rt.Type.Kind() {
 			default:
 				return fmt.Errorf("don't know how to set %s: unknown type %s", rt.Name, rt.Type.Kind())
 			case reflect.Struct:
 				if rt.Type == reflect.TypeFor[netip.Addr]() {
-					if hostaddr {
-						vv := strings.Split(v, ",")
-						v = vv[0]
-						for _, vvv := range vv[1:] {
-							if vvv == "" {
-								cfg.multiHostaddr = append(cfg.multiHostaddr, netip.Addr{})
-							} else {
-								ip, err := netip.ParseAddr(vvv)
-								if err != nil {
-									return fmt.Errorf(f+"%w", k, err)
-								}
-								cfg.multiHostaddr = append(cfg.multiHostaddr, ip)
-							}
-						}
-					}
 					ip, err := netip.ParseAddr(v)
 					if err != nil {
 						return fmt.Errorf(f+"%w", k, err)
@@ -947,54 +637,13 @@ func (cfg *Config) setFromTag(o map[string]string, tag string, service bool) err
 				if sslnegotiation && !slices.Contains(sslNegotiations, SSLNegotiation(v)) {
 					return fmt.Errorf(f+`%q is not supported; supported values are %s`, k, v, pqutil.Join(sslNegotiations))
 				}
-				if targetsessionattrs && !slices.Contains(targetSessionAttrs, TargetSessionAttrs(v)) {
-					return fmt.Errorf(f+`%q is not supported; supported values are %s`, k, v, pqutil.Join(targetSessionAttrs))
-				}
-				if loadbalancehosts && !slices.Contains(loadBalanceHosts, LoadBalanceHosts(v)) {
-					return fmt.Errorf(f+`%q is not supported; supported values are %s`, k, v, pqutil.Join(loadBalanceHosts))
-				}
 				if (minprotocolversion || maxprotocolversion) && !slices.Contains(protocolVersions, ProtocolVersion(v)) {
 					return fmt.Errorf(f+`%q is not supported; supported values are %s`, k, v, pqutil.Join(protocolVersions))
 				}
 				if (sslminprotocolversion || sslmaxprotocolversion) && !slices.Contains(sslProtocolVersions, SSLProtocolVersion(v)) {
 					return fmt.Errorf(f+`%q is not supported; supported values are %s`, k, v, pqutil.Join(sslProtocolVersions))
 				}
-				if host {
-					vv := strings.Split(v, ",")
-					v = vv[0]
-					for i, vvv := range vv[1:] {
-						if vvv == "" {
-							vv[i+1] = "localhost"
-						}
-					}
-					cfg.multiHost = append(cfg.multiHost, vv[1:]...)
-				}
 				rv.SetString(v)
-			case reflect.Slice:
-				if requireauth {
-					if v == "" {
-						rv.Set(reflect.ValueOf((RequireAuths)(nil)))
-						continue
-					}
-					var (
-						vv  = strings.Split(v, ",")
-						s   = make(RequireAuths, len(vv))
-						neg = len(vv) > 0 && strings.HasPrefix(vv[0], "!")
-					)
-					for i := range vv {
-						if !slices.Contains(requireAuths, RequireAuth(vv[i])) {
-							return fmt.Errorf(f+`%q is not supported; supported values are %s`, k, vv[i], pqutil.Join(requireAuths))
-						}
-						if neg && !strings.HasPrefix(vv[i], "!") {
-							return fmt.Errorf(f+`require_auth method %q cannot be mixed with negative methods`, k, vv[i])
-						}
-						if !neg && strings.HasPrefix(vv[i], "!") {
-							return fmt.Errorf(f+`negative require_auth method %q cannot be mixed with non-negative methods`, k, vv[i])
-						}
-						s[i] = RequireAuth(vv[i])
-					}
-					rv.Set(reflect.ValueOf(s))
-				}
 			case reflect.Int64:
 				n, err := strconv.ParseInt(v, 10, 64)
 				if err != nil {
@@ -1005,20 +654,6 @@ func (cfg *Config) setFromTag(o map[string]string, tag string, service bool) err
 				}
 				rv.SetInt(n)
 			case reflect.Uint16:
-				if port {
-					vv := strings.Split(v, ",")
-					v = vv[0]
-					for _, vvv := range vv[1:] {
-						if vvv == "" {
-							vvv = "5432"
-						}
-						n, err := strconv.ParseUint(vvv, 10, 16)
-						if err != nil {
-							return fmt.Errorf(f+"%w", k, err)
-						}
-						cfg.multiPort = append(cfg.multiPort, uint16(n))
-					}
-				}
 				n, err := strconv.ParseUint(v, 10, 16)
 				if err != nil {
 					return fmt.Errorf(f+"%w", k, err)
@@ -1034,14 +669,8 @@ func (cfg *Config) setFromTag(o map[string]string, tag string, service bool) err
 		}
 	}
 
-	// Set run-time; we delete map keys as they're set in the struct. For the
-	// service file we don't support extra parameters and error out.
-	if service && len(o) > 0 {
-		var key string
-		maps.Keys(o)(func(k string) bool { key = k; return false })
-		return fmt.Errorf("pq: unknown setting %q in service file for service %q", key, cfg.Service)
-	}
-	if !service && tag == "postgres" {
+	// Set run-time; we delete map keys as they're set in the struct.
+	if tag == "postgres" {
 		// Make sure database= sets dbname=, as that previously worked (kind of
 		// by accident). TODO(v2): remove
 		if d, ok := o["database"]; ok {
@@ -1123,22 +752,6 @@ func (cfg Config) string() string {
 		}
 		if k == "application_name" && m[k] == "pqgo" {
 			continue
-		}
-		if k == "host" && len(cfg.multiHost) > 0 {
-			m[k] += "," + strings.Join(cfg.multiHost, ",")
-		}
-		if k == "hostaddr" && len(cfg.multiHostaddr) > 0 {
-			for _, ha := range cfg.multiHostaddr {
-				m[k] += ","
-				if ha != (netip.Addr{}) {
-					m[k] += ha.String()
-				}
-			}
-		}
-		if k == "port" && len(cfg.multiPort) > 0 {
-			for _, p := range cfg.multiPort {
-				m[k] += "," + strconv.Itoa(int(p))
-			}
 		}
 		keys = append(keys, k)
 	}

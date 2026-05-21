@@ -60,9 +60,6 @@ func getTLSConfigClone(key string) *tls.Config {
 
 // ssl generates a function to upgrade a net.Conn based on the "sslmode" and
 // related settings. The function is nil when no upgrade should take place.
-//
-// Don't refer to Config.SSLMode here, as the mode in arguments may be different
-// in case of sslmode=allow or prefer.
 func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 	var (
 		home = pqutil.Home(true)
@@ -72,37 +69,15 @@ func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 		// Only verify the CA signing but not the hostname.
 		verifyCaOnly = false
 	)
-	if mode.useSSL() && !cfg.SSLInline && cfg.SSLRootCert == "" && home != "" {
-		f := filepath.Join(home, "root.crt")
-		if _, err := os.Stat(f); err == nil {
-			cfg.SSLRootCert = f
-		}
-	}
 	switch {
-	case mode == SSLModeDisable || mode == SSLModeAllow:
+	case mode == SSLModeDisable:
 		return nil, nil
 
-	case mode == SSLModeRequire || mode == SSLModePrefer:
-		// Skip TLS's own verification since it requires full verification.
+	case mode == SSLModeRequire:
+		// Skip TLS verification entirely; sslmode=require means "encrypt the
+		// transport but do not validate the peer." Callers who want validation
+		// must use verify-ca or verify-full.
 		tlsConf.InsecureSkipVerify = true
-
-		// From http://www.postgresql.org/docs/current/static/libpq-ssl.html:
-		//
-		// For backwards compatibility with earlier versions of PostgreSQL, if a
-		// root CA file exists, the behavior of sslmode=require will be the same
-		// as that of verify-ca, meaning the server certificate is validated
-		// against the CA. Relying on this behavior is discouraged, and
-		// applications that need certificate validation should always use
-		// verify-ca or verify-full.
-		if cfg.SSLRootCert != "" {
-			if cfg.SSLInline {
-				verifyCaOnly = true
-			} else if _, err := os.Stat(cfg.SSLRootCert); err == nil {
-				verifyCaOnly = true
-			} else if cfg.SSLRootCert != "system" {
-				cfg.SSLRootCert = ""
-			}
-		}
 	case mode == SSLModeVerifyCA:
 		// Skip TLS's own verification since it requires full verification.
 		tlsConf.InsecureSkipVerify = true
@@ -132,9 +107,28 @@ func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	rootPem, err := sslCertificateAuthority(tlsConf, cfg)
+	// For verify-ca/verify-full we also default to ~/.postgresql/root.crt if
+	// it exists, matching libpq. sslmode=require never auto-discovers — that
+	// was the surprising "silently promote to verify-ca" behaviour we removed.
+	verifyMode := mode == SSLModeVerifyCA || mode == SSLModeVerifyFull
+	if verifyMode && cfg.SSLRootCert == "" && !cfg.SSLInline && home != "" {
+		f := filepath.Join(home, "root.crt")
+		if _, err := os.Stat(f); err == nil {
+			cfg.SSLRootCert = f
+		}
+	}
+	// Load the root cert bytes if set. They're used for two distinct things:
+	// populating tlsConf.RootCAs for server verification (only under verify
+	// modes), and extracting intermediates to append to the client cert chain
+	// (any mode, as long as a client cert is configured).
+	rootPem, err := loadSSLRootCert(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if verifyMode {
+		if err := sslApplyRootCAs(tlsConf, cfg, rootPem); err != nil {
+			return nil, err
+		}
 	}
 	sslAppendIntermediates(tlsConf, cfg, rootPem)
 
@@ -231,36 +225,37 @@ func sslClientCertificates(tlsConf *tls.Config, cfg Config, home string) error {
 
 var testSystemRoots *x509.CertPool
 
-// sslCertificateAuthority adds the RootCA specified in the "sslrootcert" setting.
-func sslCertificateAuthority(tlsConf *tls.Config, cfg Config) ([]byte, error) {
-	// Only load root certificate if not blank, like libpq.
-	if cfg.SSLRootCert == "" {
+// loadSSLRootCert returns the PEM bytes of the configured sslrootcert, or nil
+// if not set or set to "system". Errors only on I/O failure or invalid config.
+// Parsing the PEM is left to the caller.
+func loadSSLRootCert(cfg Config) ([]byte, error) {
+	if cfg.SSLRootCert == "" || cfg.SSLRootCert == "system" {
 		return nil, nil
 	}
+	if cfg.SSLInline {
+		return []byte(cfg.SSLRootCert), nil
+	}
+	return os.ReadFile(cfg.SSLRootCert)
+}
 
+// sslApplyRootCAs populates tlsConf.RootCAs from the loaded root cert bytes.
+// Only call under verify-ca / verify-full — sslmode=require sets
+// InsecureSkipVerify, which makes RootCAs irrelevant for server verification.
+func sslApplyRootCAs(tlsConf *tls.Config, cfg Config, rootPem []byte) error {
+	if cfg.SSLRootCert == "" {
+		return nil
+	}
 	if cfg.SSLRootCert == "system" {
 		// No work to do as system CAs are used by default if RootCAs is nil.
 		tlsConf.RootCAs = testSystemRoots
-		return nil, nil
+		return nil
 	}
-
-	tlsConf.RootCAs = x509.NewCertPool()
-
-	var cert []byte
-	if cfg.SSLInline {
-		cert = []byte(cfg.SSLRootCert)
-	} else {
-		var err error
-		cert, err = os.ReadFile(cfg.SSLRootCert)
-		if err != nil {
-			return nil, err
-		}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(rootPem) {
+		return errors.New("pq: couldn't parse pem from sslrootcert")
 	}
-
-	if !tlsConf.RootCAs.AppendCertsFromPEM(cert) {
-		return nil, errors.New("pq: couldn't parse pem from sslrootcert")
-	}
-	return cert, nil
+	tlsConf.RootCAs = pool
+	return nil
 }
 
 // sslAppendIntermediates appends intermediate CA certificates from sslrootcert

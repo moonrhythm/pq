@@ -221,9 +221,7 @@ func (l *ListenerConn) listenerConnLoop() (err error) {
 		case proto.ParameterStatus:
 			// ignore
 		case proto.NoticeResponse:
-			if n := l.cn.noticeHandler; n != nil {
-				n(parseError(r, ""))
-			}
+			// ignored
 		default:
 			return fmt.Errorf("unexpected message %q from server in listenerConnLoop", t)
 		}

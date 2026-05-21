@@ -51,13 +51,14 @@ func TestSSLMode(t *testing.T) {
 		connect string
 		wantErr string
 	}{
-		// Default (prefer) should work both with and without ssl.
+		// Default (require) should work against an SSL-enabled server and
+		// error against one that doesn't support SSL.
 		{"user=pqgossl", ""},
-		{f.DSN(), ""},
+		{f.DSN(), ""}, // f.DSN() forces sslmode=disable.
 
 		// sslmode=require: require SSL, but don't verify certificate.
 		{"sslmode=require user=pqgossl", ""},
-		{"sslmode=require " + f.DSN(), "pq: SSL is not enabled on the server"},
+		{fmt.Sprintf("sslmode=require host=%s port=%s", f.Host(), f.Port()), "pq: SSL is not enabled on the server"},
 
 		// sslmode=verify-ca: verify that the certificate was signed by a trusted CA
 		{"host=postgres sslmode=verify-ca user=pqgossl", "invalid-cert"},
@@ -72,31 +73,26 @@ func TestSSLMode(t *testing.T) {
 		{"sslrootcert=testdata/ssl/root.crt sslmode=verify-full user=pqgossl host=postgres-invalid", "invalid-cert"},
 		{"sslrootcert=testdata/ssl/root.crt sslmode=verify-full user=pqgossl host=postgres", ""},
 
-		// With root cert
-		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", "invalid-cert"},
-		{"sslrootcert=testdata/ssl/non_existent.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
+		// sslrootcert is still loaded under sslmode=require (needed to send
+		// intermediate certs in the client cert chain), but it isn't used to
+		// verify the server. A missing file is a hard error; a valid PEM
+		// that isn't actually the server's CA is silently ignored (no
+		// verification happens under require).
+		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", ""},
+		{"sslrootcert=testdata/ssl/non_existent.crt host=127.0.0.1 sslmode=require user=pqgossl", "no such file"},
 		{"sslrootcert=testdata/ssl/root.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres-invalid sslmode=require user=pqgossl", ""},
 
-		// sslmode=prefer
-		{"sslmode=prefer user=pqgossl", ""},
-		{"sslmode=prefer", ""},
-		{"sslmode=prefer user=pqgossl " + f.DSN(), ""}, // Doesn't support SSL, so try again without.
-
-		// sslmode=allow
-		{"sslmode=allow user=pqgossl", ""}, // Requires SSL, so will try again
-		{"sslmode=allow", ""},              // Doesn't need SSL, should just work.
-		{"sslmode=allow " + f.DSN(), ""},   // Idem
-
 		// sslmode=disable
 		{"sslmode=disable user=pqgossl", "or:no encryption|login rejected (08P01)|authentication rejected by configuration (28000)"},
 
-		// sslnegotiation=direct should fail if ssl isn't required, like libpq:
-		// psql: error: weak sslmode "allow" may not be used with sslnegotiation=direct (use "require", "verify-ca", or "verify-full")
+		// sslmode=allow and sslmode=prefer are no longer supported.
+		{"sslmode=prefer", `"prefer" is not supported`},
+		{"sslmode=allow", `"allow" is not supported`},
+
+		// sslnegotiation=direct should fail with sslmode=disable, like libpq.
 		{"sslmode=disable sslnegotiation=direct", "weak sslmode"},
-		{"sslmode=allow sslnegotiation=direct", "weak sslmode"},
-		{"sslmode=prefer sslnegotiation=direct", "weak sslmode"},
 	}
 
 	for _, tt := range tests {
@@ -346,11 +342,13 @@ func TestSSLDefaults(t *testing.T) {
 
 	tests := []struct {
 		file    string
+		dsn     string
 		wantErr string
 	}{
-		{"root.crt", `couldn't parse pem from sslrootcert`},
-		{"postgresql.crt", `failed to find any PEM data in certificate input`},
-		{"postgresql.key", `failed to find any PEM data in key input`},
+		// root.crt is only auto-discovered under verify-ca / verify-full.
+		{"root.crt", "user=pqgossl sslmode=verify-ca", `couldn't parse pem from sslrootcert`},
+		{"postgresql.crt", "user=pqgossl sslmode=require", `failed to find any PEM data in certificate input`},
+		{"postgresql.key", "user=pqgossl sslmode=require", `failed to find any PEM data in key input`},
 	}
 
 	for _, tt := range tests {
@@ -367,7 +365,7 @@ func TestSSLDefaults(t *testing.T) {
 				pqtest.Chmod(t, 0o600, pqutil.Home(true), "postgresql.key")
 			}
 
-			_, err := pqtest.DB(t, "user=pqgossl sslmode=require")
+			_, err := pqtest.DB(t, tt.dsn)
 			if !pqtest.ErrorContains(err, tt.wantErr) {
 				t.Fatalf("wrong error:\nhave: %v\nwant: %s", err, tt.wantErr)
 			}
@@ -402,7 +400,6 @@ func TestSSLRootCA(t *testing.T) {
 
 		{"sslmode=verify-ca", `weak sslmode`},
 		{"sslmode=disable", `weak sslmode`},
-		{"sslmode=allow", `weak sslmode`},
 	}
 
 	for _, tt := range tests {

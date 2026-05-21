@@ -265,20 +265,14 @@ func TestDecodeScan(t *testing.T) {
 
 	t.Parallel()
 	db := pqtest.MustDB(t)
-	for i, tt := range tests {
+	for _, tt := range tests {
 		t.Run("", func(t *testing.T) {
 			if s, ok := tt.params[0].(string); ok && strings.ContainsRune(s, 0x00) {
 				pqtest.SkipCockroach(t) // https://github.com/cockroachdb/cockroach/issues/167287
 			}
-			if pqtest.ForceBinaryParameters() && i == 7 {
-				pqtest.SkipCockroach(t) // TODO: no error? Don't really follow why
-			}
 			var have any
 			err := db.QueryRow(tt.query, tt.params...).Scan(&have)
 			wantErr := tt.wantErr
-			if pqtest.ForceBinaryParameters() && tt.wantErrBin != "X" {
-				wantErr = tt.wantErrBin
-			}
 			if !pqtest.ErrorContains(err, wantErr) {
 				t.Fatalf("wrong error:\nhave: %s\nwant: %s", err, wantErr)
 			}
@@ -331,37 +325,33 @@ func TestEncodeBytea(t *testing.T) {
 func TestByteaOutputFormats(t *testing.T) {
 	t.Parallel()
 	db := pqtest.MustDB(t)
-	for _, format := range []string{"hex", "escape"} {
-		t.Run("", func(t *testing.T) {
-			// Use transaction to avoid relying on getting the same connection
-			tx := pqtest.Begin(t, db)
-			pqtest.Exec(t, tx, `set local bytea_output to `+format)
+	// Use transaction to avoid relying on getting the same connection
+	tx := pqtest.Begin(t, db)
+	pqtest.Exec(t, tx, `set local bytea_output to hex`)
 
-			rows := pqtest.Query[[]byte](t, tx, `select decode('5c7800ff6162630108', 'hex')`)
-			want := []byte("\x5c\x78\x00\xff\x61\x62\x63\x01\x08")
-			if !bytes.Equal(rows[0]["decode"], want) {
-				t.Errorf("\nhave: %v\nwant: %v", rows[0]["decode"], want)
-			}
+	rows := pqtest.Query[[]byte](t, tx, `select decode('5c7800ff6162630108', 'hex')`)
+	want := []byte("\x5c\x78\x00\xff\x61\x62\x63\x01\x08")
+	if !bytes.Equal(rows[0]["decode"], want) {
+		t.Errorf("\nhave: %v\nwant: %v", rows[0]["decode"], want)
+	}
 
-			{ // Same but with Prepare
-				stmt := pqtest.Prepare(t, tx, `select decode('5c7800ff6162630108', 'hex')`, db)
-				rows, err := stmt.Query()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !rows.Next() {
-					t.Fatal(rows.Err())
-				}
-				var have []byte
-				err = rows.Scan(&have)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(have, want) {
-					t.Errorf("\nhave: %v\nwant: %v", have, want)
-				}
-			}
-		})
+	{ // Same but with Prepare
+		stmt := pqtest.Prepare(t, tx, `select decode('5c7800ff6162630108', 'hex')`, db)
+		rows, err := stmt.Query()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !rows.Next() {
+			t.Fatal(rows.Err())
+		}
+		var have []byte
+		err = rows.Scan(&have)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(have, want) {
+			t.Errorf("\nhave: %v\nwant: %v", have, want)
+		}
 	}
 }
 
@@ -474,12 +464,6 @@ func BenchmarkEncode(b *testing.B) {
 		}
 	})
 	b.Run("bytea_hex", func(b *testing.B) {
-		x := []byte("abcdefghijklmnopqrstuvwxyz")
-		for i := 0; i < b.N; i++ {
-			encode(x, oid.T_bytea)
-		}
-	})
-	b.Run("bytea_escape", func(b *testing.B) {
 		x := []byte("abcdefghijklmnopqrstuvwxyz")
 		for i := 0; i < b.N; i++ {
 			encode(x, oid.T_bytea)

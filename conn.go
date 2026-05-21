@@ -3,7 +3,6 @@ package pq
 import (
 	"bufio"
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
@@ -13,16 +12,13 @@ import (
 	"io"
 	"math"
 	"net"
-	"os"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/lib/pq/internal/pgpass"
 	"github.com/lib/pq/internal/pqsql"
 	"github.com/lib/pq/internal/pqutil"
 	"github.com/lib/pq/internal/proto"
@@ -75,13 +71,6 @@ func init() {
 	sql.Register("postgres", &Driver{})
 }
 
-var debugProto = func() bool {
-	// Check for exactly "1" (rather than mere existence) so we can add
-	// options/flags in the future. I don't know if we ever want that, but it's
-	// nice to leave the option open.
-	return os.Getenv("PQGO_DEBUG") == "1"
-}()
-
 // Driver is the Postgres database driver.
 type Driver struct{}
 
@@ -94,10 +83,9 @@ func (d Driver) Open(name string) (driver.Conn, error) {
 
 // Parameters sent by PostgreSQL on startup.
 type parameterStatus struct {
-	serverVersion                            int
-	currentLocation                          *time.Location
-	inHotStandby, defaultTransactionReadOnly sql.NullBool
-	isRedshift                               bool
+	serverVersion   int
+	currentLocation *time.Location
+	isRedshift      bool
 }
 
 type format int
@@ -190,9 +178,7 @@ type conn struct {
 	secretKey           []byte              // Cancellation key for CancelRequest messages.
 	pid                 int                 // Cancellation PID.
 	inProgress          atomic.Bool         // This connection is in the middle of a processing a request.
-	noticeHandler       func(*Error)        // If not nil, notices will be synchronously sent here
 	notificationHandler func(*Notification) // If not nil, notifications will be synchronously sent here
-	gss                 GSS                 // GSSAPI context
 }
 
 type syncErr struct {
@@ -255,191 +241,43 @@ func DialOpen(d Dialer, dsn string) (_ driver.Conn, err error) {
 }
 
 func (c *Connector) open(ctx context.Context) (*conn, error) {
-	tsa := c.cfg.TargetSessionAttrs
-restartAll:
-	var (
-		errs []error
-		app  = func(err error, cfg Config) bool {
-			if err != nil {
-				if debugProto {
-					fmt.Fprintln(os.Stderr, "CONNECT  (error)", err)
-				}
-				errs = append(errs, fmt.Errorf("connecting to %s:%d: %w", cfg.Host, cfg.Port, err))
-			}
-			return err != nil
-		}
-	)
-	for _, cfg := range c.cfg.hosts() {
-		mode := cfg.SSLMode
-		if mode == "" {
-			mode = SSLModePrefer
-		}
-	restartHost:
-		if debugProto {
-			fmt.Fprintln(os.Stderr, "CONNECT ", cfg.string())
-		}
-
-		cfg.SSLMode = mode
-		cn := &conn{cfg: cfg, dialer: c.dialer}
-		cn.cfg.Password = pgpass.PasswordFromPgpass(cn.cfg.Passfile, cn.cfg.User, cn.cfg.Password,
-			cn.cfg.Host, strconv.Itoa(int(cn.cfg.Port)), cn.cfg.Database)
-
-		var err error
-		cn.c, err = dial(ctx, c.dialer, cn.cfg)
-		if app(err, cfg) {
-			continue
-		}
-
-		err = cn.ssl(cn.cfg, mode)
-		if err != nil && mode == SSLModePrefer {
-			mode = SSLModeDisable
-			goto restartHost
-		}
-		if app(err, cfg) {
-			if cn.c != nil {
-				_ = cn.c.Close()
-			}
-			continue
-		}
-
-		cn.buf = bufio.NewReader(cn.c)
-		err = cn.startup(cn.cfg)
-		if err != nil && mode == SSLModeAllow {
-			mode = SSLModeRequire
-			goto restartHost
-		}
-		if app(err, cfg) {
-			_ = cn.c.Close()
-			continue
-		}
-
-		// Reset the deadline, in case one was set (see dial)
-		if cn.cfg.ConnectTimeout > 0 {
-			err := cn.c.SetDeadline(time.Time{})
-			if app(err, cfg) {
-				_ = cn.c.Close()
-				continue
-			}
-		}
-
-		err = cn.checkTSA(tsa)
-		if app(err, cfg) {
-			_ = cn.c.Close()
-			continue
-		}
-
-		return cn, nil
+	cfg := c.cfg
+	mode := cfg.SSLMode
+	if mode == "" {
+		mode = SSLModeRequire
 	}
 
-	// target_session_attrs=prefer-standby is treated as standby in checkTSA; we
-	// ran out of hosts so none are on standby. Clear the setting and try again.
-	if c.cfg.TargetSessionAttrs == TargetSessionAttrsPreferStandby {
-		tsa = TargetSessionAttrsAny
-		goto restartAll
-	}
+	cfg.SSLMode = mode
+	cn := &conn{cfg: cfg, dialer: c.dialer}
 
-	if len(c.cfg.Multi) == 0 {
-		// Remove the "connecting to [..]" when we have just one host, so the
-		// error is identical to what we had before.
-		return nil, errors.Unwrap(errs[0])
-	}
-	return nil, fmt.Errorf("pq: could not connect to any of the hosts:\n%w", errors.Join(errs...))
-}
-
-func (cn *conn) getBool(query string) (bool, error) {
-	res, err := cn.simpleQuery(query)
+	var err error
+	cn.c, err = dial(ctx, c.dialer, cn.cfg)
 	if err != nil {
-		return false, err
-	}
-	defer res.Close()
-
-	v := make([]driver.Value, 1)
-	err = res.Next(v)
-	if err != nil {
-		return false, err
+		return nil, err
 	}
 
-	switch vv := v[0].(type) {
-	default:
-		return false, fmt.Errorf("parseBool: unknown type %T: %[1]v", v[0])
-	case bool:
-		return vv, nil
-	case string:
-		vv, ok := v[0].(string)
-		if !ok {
-			return false, err
+	if err := cn.ssl(cn.cfg, mode); err != nil {
+		if cn.c != nil {
+			_ = cn.c.Close()
 		}
-		return vv == "on", nil
+		return nil, err
 	}
-}
 
-func (cn *conn) checkTSA(tsa TargetSessionAttrs) error {
-	var (
-		geths = func() (hs bool, err error) {
-			hs = cn.parameterStatus.inHotStandby.Bool
-			if !cn.parameterStatus.inHotStandby.Valid {
-				hs, err = cn.getBool("select pg_catalog.pg_is_in_recovery()")
-			}
-			return hs, err
-		}
-		getro = func() (ro bool, err error) {
-			ro = cn.parameterStatus.defaultTransactionReadOnly.Bool
-			if !cn.parameterStatus.defaultTransactionReadOnly.Valid {
-				ro, err = cn.getBool("show transaction_read_only")
-			}
-			return ro, err
-		}
-	)
+	cn.buf = bufio.NewReader(cn.c)
+	if err := cn.startup(cn.cfg); err != nil {
+		_ = cn.c.Close()
+		return nil, err
+	}
 
-	switch tsa {
-	default:
-		panic("unreachable")
-	case "", TargetSessionAttrsAny:
-		return nil
-	case TargetSessionAttrsReadWrite, TargetSessionAttrsReadOnly:
-		readonly, err := getro()
-		if err != nil {
-			return err
-		}
-		if !cn.parameterStatus.defaultTransactionReadOnly.Valid {
-			var err error
-			readonly, err = cn.getBool("show transaction_read_only")
-			if err != nil {
-				return err
-			}
-		}
-		switch {
-		case tsa == TargetSessionAttrsReadOnly && !readonly:
-			return errors.New("session is not read-only")
-		case tsa == TargetSessionAttrsReadWrite:
-			if readonly {
-				return errors.New("session is read-only")
-			}
-			hs, err := geths()
-			if err != nil {
-				return err
-			}
-			if hs {
-				return errors.New("server is in hot standby mode")
-			}
-			return nil
-		default:
-			return nil
-		}
-	case TargetSessionAttrsPrimary, TargetSessionAttrsStandby, TargetSessionAttrsPreferStandby:
-		hs, err := geths()
-		if err != nil {
-			return err
-		}
-		switch {
-		case (tsa == TargetSessionAttrsStandby || tsa == TargetSessionAttrsPreferStandby) && !hs:
-			return errors.New("server is not in hot standby mode")
-		case tsa == TargetSessionAttrsPrimary && hs:
-			return errors.New("server is in hot standby mode")
-		default:
-			return nil
+	// Reset the deadline, in case one was set (see dial)
+	if cn.cfg.ConnectTimeout > 0 {
+		if err := cn.c.SetDeadline(time.Time{}); err != nil {
+			_ = cn.c.Close()
+			return nil, err
 		}
 	}
+
+	return cn, nil
 }
 
 func dial(ctx context.Context, d Dialer, cfg Config) (net.Conn, error) {
@@ -487,6 +325,10 @@ func (cn *conn) checkIsInTransaction(intxn bool) error {
 	}
 	return nil
 }
+
+// Never called; required to satisfy [driver.Conn]. [database/sql] selects
+// BeginTx instead.
+func (cn *conn) Begin() (driver.Tx, error) { panic("conn.Begin") }
 
 // Implement [driver.ConnBeginTx].
 func (cn *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
@@ -613,10 +455,6 @@ func (cn *conn) gname() string {
 }
 
 func (cn *conn) simpleExec(q string) (res driver.Result, commandTag string, resErr error) {
-	if debugProto {
-		fmt.Fprintln(os.Stderr, "         START conn.simpleExec")
-		defer fmt.Fprintln(os.Stderr, "         END conn.simpleExec")
-	}
 
 	b := cn.writeBuf(proto.Query)
 	b.string(q)
@@ -656,10 +494,6 @@ func (cn *conn) simpleExec(q string) (res driver.Result, commandTag string, resE
 }
 
 func (cn *conn) simpleQuery(q string) (*rows, error) {
-	if debugProto {
-		fmt.Fprintln(os.Stderr, "         START conn.simpleQuery")
-		defer fmt.Fprintln(os.Stderr, "         END conn.simpleQuery")
-	}
 
 	b := cn.writeBuf(proto.Query)
 	b.string(q)
@@ -785,10 +619,6 @@ func decideColumnFormats(colTyps []fieldDesc, forceText bool) (colFmts []format,
 }
 
 func (cn *conn) prepareTo(q, stmtName string) (*stmt, error) {
-	if debugProto {
-		fmt.Fprintln(os.Stderr, "         START conn.prepareTo")
-		defer fmt.Fprintln(os.Stderr, "         END conn.prepareTo")
-	}
 
 	st := &stmt{cn: cn, name: stmtName}
 
@@ -826,6 +656,10 @@ func (cn *conn) prepareTo(q, stmtName string) (*stmt, error) {
 	}
 	return st, nil
 }
+
+// Never called; required to satisfy [driver.Conn]. [database/sql] selects
+// PrepareContext instead.
+func (cn *conn) Prepare(q string) (driver.Stmt, error) { panic("conn.Prepare") }
 
 // Implement [driver.ConnPrepareContext].
 func (cn *conn) PrepareContext(ctx context.Context, q string) (driver.Stmt, error) {
@@ -921,10 +755,6 @@ func (cn *conn) QueryContext(ctx context.Context, query string, args []driver.Na
 }
 
 func (cn *conn) query(query string, args []driver.NamedValue) (*rows, error) {
-	if debugProto {
-		fmt.Fprintln(os.Stderr, "         START conn.query")
-		defer fmt.Fprintln(os.Stderr, "         END conn.query")
-	}
 	if err := cn.err.get(); err != nil {
 		return nil, err
 	}
@@ -1048,15 +878,6 @@ type safeRetryError struct{ Err error }
 func (se *safeRetryError) Error() string { return se.Err.Error() }
 
 func (cn *conn) send(m *writeBuf) error {
-	if debugProto {
-		w := m.wrap()
-		for len(w) > 0 { // Can contain multiple messages.
-			c := proto.RequestCode(w[0])
-			l := int(binary.BigEndian.Uint32(w[1:5])) - 4
-			fmt.Fprintf(os.Stderr, "CLIENT → %-20s %5d  %q\n", c, l, w[5:l+5])
-			w = w[l+5:]
-		}
-	}
 
 	n, err := cn.c.Write(m.wrap())
 	if err != nil && n == 0 {
@@ -1066,10 +887,6 @@ func (cn *conn) send(m *writeBuf) error {
 }
 
 func (cn *conn) sendStartupPacket(m *writeBuf) error {
-	if debugProto {
-		w := m.wrap()
-		fmt.Fprintf(os.Stderr, "CLIENT → %-20s %5d  %q\n", "Startup", int(binary.BigEndian.Uint32(w[1:5]))-4, w[5:])
-	}
 	_, err := cn.c.Write((m.wrap())[1:])
 	return err
 }
@@ -1077,9 +894,6 @@ func (cn *conn) sendStartupPacket(m *writeBuf) error {
 // Send a message of type typ to the server on the other end of cn. The message
 // should have no payload. This method does not use the scratch buffer.
 func (cn *conn) sendSimpleMessage(typ proto.RequestCode) error {
-	if debugProto {
-		fmt.Fprintf(os.Stderr, "CLIENT → %-20s %5d  %q\n", typ, 0, []byte{})
-	}
 	_, err := cn.c.Write([]byte{byte(typ), '\x00', '\x00', '\x00', '\x04'})
 	return err
 }
@@ -1147,9 +961,6 @@ func (cn *conn) recvMessage(r *readBuf) (proto.ResponseCode, error) {
 		return 0, err
 	}
 	*r = y
-	if debugProto {
-		fmt.Fprintf(os.Stderr, "SERVER ← %-20s %5d  %q\n", t, n, y)
-	}
 	return t, nil
 }
 
@@ -1168,9 +979,7 @@ func (cn *conn) recv() (proto.ResponseCode, *readBuf, error) {
 		case proto.ErrorResponse:
 			return 0, nil, parseError(r, "")
 		case proto.NoticeResponse:
-			if n := cn.noticeHandler; n != nil {
-				n(parseError(r, ""))
-			}
+			// ignored
 		case proto.NotificationResponse:
 			if n := cn.notificationHandler; n != nil {
 				n(recvNotification(r))
@@ -1196,9 +1005,7 @@ func (cn *conn) recv1Buf(r *readBuf) (proto.ResponseCode, error) {
 				n(recvNotification(r))
 			}
 		case proto.NoticeResponse:
-			if n := cn.noticeHandler; n != nil {
-				n(parseError(r, ""))
-			}
+			// ignored
 		case proto.ParameterStatus:
 			cn.processParameterStatus(r)
 		default:
@@ -1368,7 +1175,6 @@ func (cn *conn) startup(cfg Config) error {
 		return err
 	}
 
-	var didauth bool
 	for {
 		t, r, err := cn.recv()
 		if err != nil {
@@ -1386,9 +1192,6 @@ func (cn *conn) startup(cfg Config) error {
 			cn.processParameterStatus(r)
 		case proto.AuthenticationRequest:
 			code := proto.AuthCode(r.int32())
-			if code != proto.AuthReqOk {
-				didauth = true
-			}
 			err := cn.auth(code, r, cfg)
 			if err != nil {
 				return err
@@ -1400,9 +1203,6 @@ func (cn *conn) startup(cfg Config) error {
 				return fmt.Errorf("pq: protocol version mismatch: min_protocol_version=%s; server supports up to 3.%d", cfg.MinProtocolVersion, newestMinor)
 			}
 		case proto.ReadyForQuery:
-			if len(cn.cfg.RequireAuth) > 0 && !didauth && !slices.Contains(cn.cfg.RequireAuth, RequireAuthNone) {
-				return fmt.Errorf("pq: authentication method requirement %q failed: server did not perform any authentication", cn.cfg.RequireAuth)
-			}
 			cn.processReadyForQuery(r)
 			return nil
 		default:
@@ -1415,90 +1215,12 @@ func (cn *conn) auth(code proto.AuthCode, r *readBuf, cfg Config) error {
 	switch code {
 	default:
 		return fmt.Errorf("pq: unknown authentication response: %s", code)
-	case proto.AuthReqKrb4, proto.AuthReqKrb5, proto.AuthReqCrypt, proto.AuthReqSSPI:
+	case proto.AuthReqKrb4, proto.AuthReqKrb5, proto.AuthReqCrypt, proto.AuthReqSSPI, proto.AuthReqGSS, proto.AuthReqGSSCont, proto.AuthReqPassword, proto.AuthReqMD5:
 		return fmt.Errorf("pq: unsupported authentication method: %s", code)
 	case proto.AuthReqOk:
 		return nil
 
-	case proto.AuthReqPassword:
-		if len(cn.cfg.RequireAuth) > 0 && !slices.Contains(cn.cfg.RequireAuth, RequireAuthPassword) && !slices.Contains(cn.cfg.RequireAuth, RequireAuthAny) {
-			return fmt.Errorf("pq: authentication method requirement %q failed: server requested %q", cn.cfg.RequireAuth, RequireAuthPassword)
-		}
-		w := cn.writeBuf(proto.PasswordMessage)
-		w.string(cfg.Password)
-		// Don't need to check AuthOk response here; auth() is called in a loop,
-		// which catches the errors and AuthReqOk responses.
-		return cn.send(w)
-
-	case proto.AuthReqMD5:
-		if len(cn.cfg.RequireAuth) > 0 && !slices.Contains(cn.cfg.RequireAuth, RequireAuthMD5) && !slices.Contains(cn.cfg.RequireAuth, RequireAuthAny) {
-			return fmt.Errorf("pq: authentication method requirement %q failed: server requested %q", cn.cfg.RequireAuth, RequireAuthMD5)
-		}
-		s := string(r.next(4))
-		w := cn.writeBuf(proto.PasswordMessage)
-		w.string("md5" + md5s(md5s(cfg.Password+cfg.User)+s))
-		// Same here.
-		return cn.send(w)
-
-	case proto.AuthReqGSS: // GSSAPI, startup
-		if newGss == nil {
-			return fmt.Errorf("pq: kerberos error: no GSSAPI provider registered (import github.com/lib/pq/auth/kerberos)")
-		}
-		cli, err := newGss()
-		if err != nil {
-			return fmt.Errorf("pq: kerberos error: %w", err)
-		}
-
-		var token []byte
-		if cfg.KrbSpn != "" {
-			// Use the supplied SPN if provided.
-			token, err = cli.GetInitTokenFromSpn(cfg.KrbSpn)
-		} else {
-			// Allow the kerberos service name to be overridden.
-			service := "postgres"
-			if cfg.KrbSrvname != "" {
-				service = cfg.KrbSrvname
-			}
-			token, err = cli.GetInitToken(cfg.Host, service)
-		}
-		if err != nil {
-			return fmt.Errorf("pq: failed to get Kerberos ticket: %w", err)
-		}
-
-		w := cn.writeBuf(proto.GSSResponse)
-		w.bytes(token)
-		err = cn.send(w)
-		if err != nil {
-			return err
-		}
-
-		// Store for GSSAPI continue message
-		cn.gss = cli
-		return nil
-
-	case proto.AuthReqGSSCont: // GSSAPI continue
-		if cn.gss == nil {
-			return errors.New("pq: GSSAPI protocol error")
-		}
-
-		done, tokOut, err := cn.gss.Continue([]byte(*r))
-		if err == nil && !done {
-			w := cn.writeBuf(proto.SASLInitialResponse)
-			w.bytes(tokOut)
-			err = cn.send(w)
-			if err != nil {
-				return err
-			}
-		}
-
-		// Errors fall through and read the more detailed message from the
-		// server.
-		return nil
-
 	case proto.AuthReqSASL:
-		if len(cn.cfg.RequireAuth) > 0 && !slices.Contains(cn.cfg.RequireAuth, RequireAuthScramSHA256) && !slices.Contains(cn.cfg.RequireAuth, RequireAuthAny) {
-			return fmt.Errorf("pq: authentication method requirement %q failed: server requested %q", cn.cfg.RequireAuth, RequireAuthScramSHA256)
-		}
 		sc := scram.NewClient(sha256.New, cfg.User, cfg.Password)
 		sc.Step(nil)
 		if sc.Err() != nil {
@@ -1612,12 +1334,6 @@ func (cn *conn) parseComplete(commandTag string) (driver.Result, string, error) 
 	return driver.RowsAffected(n), commandTag, nil
 }
 
-func md5s(s string) string {
-	h := md5.New()
-	h.Write([]byte(s))
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
 func (cn *conn) sendBinaryParameters(b *writeBuf, args []driver.NamedValue) error {
 	// Do one pass over the parameters to see if we're going to send any of them
 	// over in binary. If we are, create a paramFormats array at the same time.
@@ -1710,19 +1426,6 @@ func (cn *conn) processParameterStatus(r *readBuf) {
 			if err != nil {
 				cn.parameterStatus.currentLocation = nil
 			}
-		}
-	// Use sql.NullBool so we can distinguish between false and not sent. If
-	// it's not sent we use a query to get the value – I don't know when these
-	// parameters are not sent, but this is what libpq does.
-	case "in_hot_standby":
-		b, err := pqutil.ParseBool(r.string())
-		if err == nil {
-			cn.parameterStatus.inHotStandby = sql.NullBool{Valid: true, Bool: b}
-		}
-	case "default_transaction_read_only":
-		b, err := pqutil.ParseBool(r.string())
-		if err == nil {
-			cn.parameterStatus.defaultTransactionReadOnly = sql.NullBool{Valid: true, Bool: b}
 		}
 	}
 }

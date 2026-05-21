@@ -31,8 +31,7 @@ import (
 //	 5 | 'foo', 'asd'::jsonb
 //	            ^
 type Error struct {
-	// [Efatal], [Epanic], [Ewarning], [Enotice], [Edebug], [Einfo], or [Elog].
-	// Always present.
+	// One of the [pqerror.Severity*] values. Always present.
 	Severity string
 
 	// SQLSTATE code. Always present.

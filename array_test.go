@@ -227,7 +227,7 @@ func TestArrayScan(t *testing.T) {
 		{&ByteaArray{{2}, {6}, {0, 0}}, ``, newBytea(), `unable to parse array`},
 		{&ByteaArray{{2}, {6}, {0, 0}}, `{`, newBytea(), `unable to parse array`},
 		{&ByteaArray{{2}, {6}, {0, 0}}, `{{"\\xfeff"},{"\\xbeef"}}`, newBytea(), `cannot convert ARRAY[2][1] to ByteaArray`},
-		{&ByteaArray{{2}, {6}, {0, 0}}, `{"\\abc"}`, newBytea(), `could not parse bytea array index 0: could not parse bytea value`},
+		{&ByteaArray{{2}, {6}, {0, 0}}, `{"\\abc"}`, newBytea(), `could not parse bytea array index 0: pq: bytea value not in hex format`},
 
 		{&StringArray{}, nil, new(StringArray), ``},
 		{&StringArray{}, `{}`, &StringArray{}, ``},

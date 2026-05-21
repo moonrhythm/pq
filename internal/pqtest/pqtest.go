@@ -35,21 +35,6 @@ func SkipCockroach(t testing.TB) {
 	}
 }
 
-func ForceBinaryParameters() bool {
-	v, ok := os.LookupEnv("PQTEST_BINARY_PARAMETERS")
-	if !ok {
-		return false
-	}
-	switch strings.ToLower(v) {
-	case "1", "yes", "true":
-		return true
-	case "0", "no", "false":
-		return false
-	default:
-		panic("unexpected value for PQTEST_BINARY_PARAMETERS")
-	}
-}
-
 // InvalidCertificate reports if this error is an "invalid certificate" error.
 func InvalidCertificate(err error) bool {
 	switch err.(type) {
@@ -89,11 +74,6 @@ func DSN(conninfo string) string {
 		os.Setenv("PGAPPNAME", "pqgo")
 	})
 
-	if ForceBinaryParameters() &&
-		!strings.HasPrefix(conninfo, "postgres://") &&
-		!strings.HasPrefix(conninfo, "postgresql://") {
-		conninfo += " binary_parameters=yes"
-	}
 	return conninfo
 }
 

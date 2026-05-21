@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
-	"os"
 
 	"github.com/lib/pq/internal/proto"
 	"github.com/lib/pq/oid"
@@ -62,6 +61,10 @@ func (st *stmt) Close() error {
 	return nil
 }
 
+// Never called; required to satisfy [driver.Stmt]. [database/sql] selects
+// QueryContext instead.
+func (st *stmt) Query(v []driver.Value) (driver.Rows, error) { panic("stmt.Query") }
+
 // Implement [driver.StmtQueryContext].
 func (st *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	finish := st.cn.watchCancel(ctx, true)
@@ -82,6 +85,10 @@ func (st *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (dri
 	}, nil
 }
 
+// Never called; required to satisfy [driver.Stmt]. [database/sql] selects
+// ExecContext instead.
+func (st *stmt) Exec(v []driver.Value) (driver.Result, error) { panic("stmt.Exec") }
+
 // Implement [driver.StmtExecContext].
 func (st *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
 	defer st.cn.watchCancel(ctx, true)()
@@ -98,10 +105,6 @@ func (st *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driv
 }
 
 func (st *stmt) exec(v []driver.NamedValue) error {
-	if debugProto {
-		fmt.Fprintf(os.Stderr, "         START stmt.exec\n")
-		defer fmt.Fprintf(os.Stderr, "         END stmt.exec\n")
-	}
 	if len(v) >= 65536 {
 		return fmt.Errorf("pq: got %d parameters but PostgreSQL only supports 65535 parameters", len(v))
 	}
