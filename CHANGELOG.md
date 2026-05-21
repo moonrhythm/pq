@@ -13,9 +13,12 @@ to a previous version of this fork.
   subpackage are gone. `RegisterGSSProvider`, the `GSS` interface, and the
   `RequireAuth*` / `require_auth` machinery were removed with them.
 - **TLS**: `sslmode=allow` and `sslmode=prefer` are no longer accepted (no
-  downgrade fallback). The default `sslmode` is now `require`. The implicit
-  `~/.postgresql/root.crt` auto-discovery for `sslmode=require` is gone; set
-  `sslmode=verify-ca` or `verify-full` explicitly.
+  downgrade fallback). The default `sslmode` is now `require`. Under
+  `sslmode=require` the driver no longer implicitly auto-promotes to
+  CA-verification when `~/.postgresql/root.crt` or an explicit `sslrootcert=`
+  is set — set `sslmode=verify-ca` / `verify-full` to get verification. The
+  `~/.postgresql/root.crt` default *is* still honoured for `verify-ca` and
+  `verify-full`.
 - **Multi-host failover**: `target_session_attrs`, `load_balance_hosts`, the
   `Multi` / `ConfigMultihost` config, `checkTSA`, and the related
   `PGTARGETSESSIONATTRS` / `PGLOADBALANCEHOSTS` / `PGREQUIREAUTH` env vars are

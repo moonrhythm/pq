@@ -41,13 +41,14 @@ func NewFake(t testing.TB, fun func(Fake, net.Conn)) Fake {
 	return f
 }
 
-// DSN is the DSN to connect to for this server.
+// DSN is the DSN to connect to for this server. The fake server doesn't
+// implement SSL, so sslmode=disable is forced.
 func (f Fake) DSN() string {
 	h, p, err := net.SplitHostPort(f.l.Addr().String())
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return "host=" + h + " port=" + p
+	return "host=" + h + " port=" + p + " sslmode=disable"
 }
 
 // Host returns the hostname for this server.

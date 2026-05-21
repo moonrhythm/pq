@@ -51,9 +51,10 @@ func TestSSLMode(t *testing.T) {
 		connect string
 		wantErr string
 	}{
-		// Default (prefer) should work both with and without ssl.
+		// Default (require) should work against an SSL-enabled server and
+		// error against one that doesn't support SSL.
 		{"user=pqgossl", ""},
-		{f.DSN(), ""},
+		{f.DSN(), ""}, // f.DSN() forces sslmode=disable.
 
 		// sslmode=require: require SSL, but don't verify certificate.
 		{"sslmode=require user=pqgossl", ""},
@@ -72,31 +73,22 @@ func TestSSLMode(t *testing.T) {
 		{"sslrootcert=testdata/ssl/root.crt sslmode=verify-full user=pqgossl host=postgres-invalid", "invalid-cert"},
 		{"sslrootcert=testdata/ssl/root.crt sslmode=verify-full user=pqgossl host=postgres", ""},
 
-		// With root cert
-		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", "invalid-cert"},
+		// sslrootcert is ignored when sslmode=require (we only validate under verify-ca/verify-full).
+		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/non_existent.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres-invalid sslmode=require user=pqgossl", ""},
 
-		// sslmode=prefer
-		{"sslmode=prefer user=pqgossl", ""},
-		{"sslmode=prefer", ""},
-		{"sslmode=prefer user=pqgossl " + f.DSN(), ""}, // Doesn't support SSL, so try again without.
-
-		// sslmode=allow
-		{"sslmode=allow user=pqgossl", ""}, // Requires SSL, so will try again
-		{"sslmode=allow", ""},              // Doesn't need SSL, should just work.
-		{"sslmode=allow " + f.DSN(), ""},   // Idem
-
 		// sslmode=disable
 		{"sslmode=disable user=pqgossl", "or:no encryption|login rejected (08P01)|authentication rejected by configuration (28000)"},
 
-		// sslnegotiation=direct should fail if ssl isn't required, like libpq:
-		// psql: error: weak sslmode "allow" may not be used with sslnegotiation=direct (use "require", "verify-ca", or "verify-full")
+		// sslmode=allow and sslmode=prefer are no longer supported.
+		{"sslmode=prefer", `"prefer" is not supported`},
+		{"sslmode=allow", `"allow" is not supported`},
+
+		// sslnegotiation=direct should fail with sslmode=disable, like libpq.
 		{"sslmode=disable sslnegotiation=direct", "weak sslmode"},
-		{"sslmode=allow sslnegotiation=direct", "weak sslmode"},
-		{"sslmode=prefer sslnegotiation=direct", "weak sslmode"},
 	}
 
 	for _, tt := range tests {
@@ -402,7 +394,6 @@ func TestSSLRootCA(t *testing.T) {
 
 		{"sslmode=verify-ca", `weak sslmode`},
 		{"sslmode=disable", `weak sslmode`},
-		{"sslmode=allow", `weak sslmode`},
 	}
 
 	for _, tt := range tests {

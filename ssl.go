@@ -107,11 +107,22 @@ func ssl(cfg Config, mode SSLMode) (func(net.Conn) (net.Conn, error), error) {
 	if err != nil {
 		return nil, err
 	}
-	rootPem, err := sslCertificateAuthority(tlsConf, cfg)
-	if err != nil {
-		return nil, err
+	// sslrootcert only matters when we're actually verifying the peer. For
+	// verify-ca/verify-full we also default to ~/.postgresql/root.crt if it
+	// exists, matching libpq.
+	if mode == SSLModeVerifyCA || mode == SSLModeVerifyFull {
+		if cfg.SSLRootCert == "" && !cfg.SSLInline && home != "" {
+			f := filepath.Join(home, "root.crt")
+			if _, err := os.Stat(f); err == nil {
+				cfg.SSLRootCert = f
+			}
+		}
+		rootPem, err := sslCertificateAuthority(tlsConf, cfg)
+		if err != nil {
+			return nil, err
+		}
+		sslAppendIntermediates(tlsConf, cfg, rootPem)
 	}
-	sslAppendIntermediates(tlsConf, cfg, rootPem)
 
 	// Accept renegotiation requests initiated by the backend.
 	//
