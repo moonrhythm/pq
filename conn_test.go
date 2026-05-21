@@ -1583,6 +1583,11 @@ func TestAuth(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.conn, func(t *testing.T) {
+				// Cockroach doesn't actually do md5/cleartext — pqgomd5 and
+				// pqgopassword are silently auth'd as scram-sha-256.
+				if pqtest.Cockroach() && (strings.Contains(tt.conn, "pqgomd5") || strings.Contains(tt.conn, "pqgopassword")) {
+					t.Skip("cockroach upgrades md5/password to scram-sha-256")
+				}
 				_, err := pqtest.DB(t, tt.conn)
 				if !pqtest.ErrorContains(err, tt.wantErr) {
 					t.Errorf("wrong error:\nhave: %s\nwant: %s", err, tt.wantErr)

@@ -58,7 +58,7 @@ func TestSSLMode(t *testing.T) {
 
 		// sslmode=require: require SSL, but don't verify certificate.
 		{"sslmode=require user=pqgossl", ""},
-		{"sslmode=require " + f.DSN(), "pq: SSL is not enabled on the server"},
+		{fmt.Sprintf("sslmode=require host=%s port=%s", f.Host(), f.Port()), "pq: SSL is not enabled on the server"},
 
 		// sslmode=verify-ca: verify that the certificate was signed by a trusted CA
 		{"host=postgres sslmode=verify-ca user=pqgossl", "invalid-cert"},
@@ -73,9 +73,13 @@ func TestSSLMode(t *testing.T) {
 		{"sslrootcert=testdata/ssl/root.crt sslmode=verify-full user=pqgossl host=postgres-invalid", "invalid-cert"},
 		{"sslrootcert=testdata/ssl/root.crt sslmode=verify-full user=pqgossl host=postgres", ""},
 
-		// sslrootcert is ignored when sslmode=require (we only validate under verify-ca/verify-full).
-		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", ""},
-		{"sslrootcert=testdata/ssl/non_existent.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
+		// sslrootcert is still loaded under sslmode=require (needed to send
+		// intermediate certs in the client cert chain), but it isn't used to
+		// verify the server. A bad or missing file is a hard error; a valid
+		// CA that doesn't actually sign the server cert is silently ignored
+		// (no verification under require).
+		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", "couldn't parse pem"},
+		{"sslrootcert=testdata/ssl/non_existent.crt host=127.0.0.1 sslmode=require user=pqgossl", "no such file"},
 		{"sslrootcert=testdata/ssl/root.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres-invalid sslmode=require user=pqgossl", ""},
@@ -338,11 +342,13 @@ func TestSSLDefaults(t *testing.T) {
 
 	tests := []struct {
 		file    string
+		dsn     string
 		wantErr string
 	}{
-		{"root.crt", `couldn't parse pem from sslrootcert`},
-		{"postgresql.crt", `failed to find any PEM data in certificate input`},
-		{"postgresql.key", `failed to find any PEM data in key input`},
+		// root.crt is only auto-discovered under verify-ca / verify-full.
+		{"root.crt", "user=pqgossl sslmode=verify-ca", `couldn't parse pem from sslrootcert`},
+		{"postgresql.crt", "user=pqgossl sslmode=require", `failed to find any PEM data in certificate input`},
+		{"postgresql.key", "user=pqgossl sslmode=require", `failed to find any PEM data in key input`},
 	}
 
 	for _, tt := range tests {
@@ -359,7 +365,7 @@ func TestSSLDefaults(t *testing.T) {
 				pqtest.Chmod(t, 0o600, pqutil.Home(true), "postgresql.key")
 			}
 
-			_, err := pqtest.DB(t, "user=pqgossl sslmode=require")
+			_, err := pqtest.DB(t, tt.dsn)
 			if !pqtest.ErrorContains(err, tt.wantErr) {
 				t.Fatalf("wrong error:\nhave: %v\nwant: %s", err, tt.wantErr)
 			}
