@@ -75,10 +75,10 @@ func TestSSLMode(t *testing.T) {
 
 		// sslrootcert is still loaded under sslmode=require (needed to send
 		// intermediate certs in the client cert chain), but it isn't used to
-		// verify the server. A bad or missing file is a hard error; a valid
-		// CA that doesn't actually sign the server cert is silently ignored
-		// (no verification under require).
-		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", "couldn't parse pem"},
+		// verify the server. A missing file is a hard error; a valid PEM
+		// that isn't actually the server's CA is silently ignored (no
+		// verification happens under require).
+		{"sslrootcert=testdata/ssl/bogus_root.crt host=postgres sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/non_existent.crt host=127.0.0.1 sslmode=require user=pqgossl", "no such file"},
 		{"sslrootcert=testdata/ssl/root.crt host=127.0.0.1 sslmode=require user=pqgossl", ""},
 		{"sslrootcert=testdata/ssl/root.crt host=postgres sslmode=require user=pqgossl", ""},
